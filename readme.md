@@ -57,10 +57,7 @@ Use a new output directory for each run.
 
 Build each platform, collect CPU and memory measurements, then generate reports.
 
-**GitHub Actions:** The **Collections** workflow runs the platform matrix above
-on pushes and pull requests to `main`, or manually from **Actions > Collections >
-Run workflow**. View the combined report in the run's **Summary**. Download
-**Artifacts > collection-results** for per-platform reports, raw data, and logs.
+**GitHub Actions:** The **Collections** workflow emits the `collection-results` artifact.
 
 **Local:** Open `results/local/summary.md` in a Markdown viewer. CSV/JSON
 summaries, raw data, and logs are in the same output directory.

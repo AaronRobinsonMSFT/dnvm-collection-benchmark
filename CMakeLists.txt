@@ -44,6 +44,8 @@ add_library(runtime_map STATIC
 target_include_directories(runtime_map PUBLIC "${CONTAINERS}" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(MSVC)
     target_compile_options(runtime_map PRIVATE /std:c11)
+    # Keep the object that supplies the default assertion handler's linker alias.
+    target_link_options(runtime_map INTERFACE "/WHOLEARCHIVE:$<TARGET_FILE:runtime_map>")
     if(CMAKE_SIZEOF_VOID_P EQUAL 4)
         target_compile_options(runtime_map PRIVATE /arch:SSE2)
     endif()
