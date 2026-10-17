@@ -10,7 +10,7 @@ namespace dnvm
 {
 inline constexpr const char* MemoryScenarios[] = {
     "lookup_hit", "lookup_miss", "build_growing", "build_reserved", "duplicate",
-    "replace", "erase_insert", "iterate", "clear_refill"
+    "replace", "erase_insert", "iterate", "clear_refill", "duplicate_build"
 };
 inline constexpr std::uint32_t MemorySizes[] = {8, 64, 1024, 65536};
 struct LifecycleMode
@@ -19,6 +19,20 @@ struct LifecycleMode
     bool reserved;
 };
 inline constexpr LifecycleMode LifecycleModes[] = {{"growing", false}, {"reserved", true}};
+
+template <typename Map>
+bool supports_scenario(const std::string& scenario)
+{
+    if (scenario == "replace")
+        return Map::supports_replace;
+    if (scenario == "erase_insert")
+        return Map::supports_remove;
+    if (scenario == "duplicate_build")
+        return Map::allows_duplicates;
+    if (scenario == "duplicate")
+        return !Map::allows_duplicates;
+    return true;
+}
 
 inline void memory_check(bool condition, const char* message)
 {
@@ -29,9 +43,11 @@ inline void memory_check(bool condition, const char* message)
 template <typename Map>
 void memory_operation(Map& map, MapDataset<Map>& data, const std::string& scenario)
 {
-    if (scenario == "build_growing" || scenario == "build_reserved")
+    if (scenario == "build_growing" || scenario == "build_reserved" || scenario == "duplicate_build")
     {
         populate(map, data);
+        if (scenario == "duplicate_build")
+            populate(map, data);
     }
     else if (scenario == "lookup_hit" || scenario == "lookup_miss")
     {
@@ -41,7 +57,8 @@ void memory_operation(Map& map, MapDataset<Map>& data, const std::string& scenar
         {
             void* value = nullptr;
             memory_check(map.find(keys[i], value) == hit, "Memory lookup returned wrong presence");
-            memory_check(!hit || value == &data.values[i], "Memory lookup returned wrong value");
+            memory_check(!hit || value == (Map::is_set ? nullptr : &data.values[i]),
+                         "Memory lookup returned wrong value");
         }
     }
     else if (scenario == "duplicate")
@@ -58,15 +75,20 @@ void memory_operation(Map& map, MapDataset<Map>& data, const std::string& scenar
                              "Memory replacement failed");
         }
         else
-            throw std::invalid_argument("Replacement is not supported for string comparisons");
+            throw std::invalid_argument("Replacement is not supported for this comparison");
     }
     else if (scenario == "erase_insert")
     {
-        for (std::size_t i = 0; i < data.hits.size(); ++i)
+        if constexpr (Map::supports_remove)
         {
-            memory_check(map.erase(data.hit_queries[i]), "Memory removal failed");
-            memory_check(map.insert(data.hits[i], &data.values[i]), "Memory reinsertion failed");
+            for (std::size_t i = 0; i < data.hits.size(); ++i)
+            {
+                memory_check(map.erase(data.hit_queries[i]), "Memory removal failed");
+                memory_check(map.insert(data.hits[i], &data.values[i]), "Memory reinsertion failed");
+            }
         }
+        else
+            throw std::invalid_argument("Removal is not supported for this comparison");
     }
     else if (scenario == "iterate")
     {
@@ -92,12 +114,14 @@ void memory_operation(Map& map, MapDataset<Map>& data, const std::string& scenar
     {
         throw std::invalid_argument("Unknown memory scenario: " + scenario);
     }
-    memory_check(map.size() == data.hits.size(), "Memory operation changed the expected count");
+    memory_check(map.size() == data.hits.size() * (scenario == "duplicate_build" ? 2 : 1),
+                 "Memory operation changed the expected count");
     for (std::size_t i = 0; i < data.hits.size(); ++i)
     {
         void* value = nullptr;
         const std::size_t index = scenario == "replace" ? (i + 1) % data.values.size() : i;
-        memory_check(map.find(data.hit_queries[i], value) && value == &data.values[index],
+        memory_check(map.find(data.hit_queries[i], value)
+                         && value == (Map::is_set ? nullptr : &data.values[index]),
                      "Memory operation did not preserve expected entries");
     }
 }
@@ -120,7 +144,7 @@ MemoryMeasurement measure_memory(const std::string& scenario, std::uint32_t size
     MemoryScope scope(account);
     MemoryMeasurement result{};
     result.object_bytes = sizeof(Map);
-    const bool build = scenario == "build_growing" || scenario == "build_reserved";
+    const bool build = scenario == "build_growing" || scenario == "build_reserved" || scenario == "duplicate_build";
     result.includes_destruction = build;
     {
         Map map(scenario == "build_reserved" ? size : 0);

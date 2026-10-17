@@ -10,6 +10,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "key_types.h"
+#include "coreclr_maps.h"
 
 namespace dnvm
 {
@@ -19,6 +20,9 @@ class RuntimeMapAdapter
 public:
     using key_type = Key;
     static constexpr bool supports_replace = Replace != nullptr;
+    static constexpr bool supports_remove = true;
+    static constexpr bool allows_duplicates = false;
+    static constexpr bool is_set = false;
 
     explicit RuntimeMapAdapter(std::uint32_t capacity = 0, dn_allocator_t* allocator = nullptr)
         : map_(New(capacity, allocator))
@@ -99,6 +103,9 @@ public:
     using key_type = typename Map::key_type;
     using container_type = Map;
     static constexpr bool supports_replace = SupportsReplace;
+    static constexpr bool supports_remove = true;
+    static constexpr bool allows_duplicates = false;
+    static constexpr bool is_set = false;
 
     explicit StandardMap(std::uint32_t capacity = 0)
     {
@@ -172,6 +179,15 @@ void for_each_family(Visitor visitor)
     visitor("string", StringMaps{},
         "dn_simdhash_string_ptr; borrowed NUL-terminated keys; content equality; STL/Abseil hash string views. "
         "0/32/64-byte prefixes plus decimal IDs; separate equal-content hit buffers.");
+    visitor("shash", CoreClrFamily<CoreSHash>{},
+        "SHash<MapSHashTraits<uint32_t, void*>>; duplicate keys retained; removal erases all matches. "
+        "Keys 0 and UINT32_MAX are reserved. STL unordered_multimap; Abseil btree_multimap.");
+    visitor("mapshash", CoreClrFamily<CoreMapSHash>{},
+        "MapSHash<uint32_t, void*> with default no-remove traits; duplicate keys retained; "
+        "key 0 is reserved. STL unordered_multimap; Abseil btree_multimap.");
+    visitor("setshash", CoreClrFamily<CoreSetSHash>{},
+        "SetSHash<uint32_t> with default no-remove traits; duplicate keys retained; key 0 is reserved. "
+        "STL unordered_multiset; Abseil btree_multiset. No mapped values.");
 }
 
 template <typename Visitor>
@@ -188,6 +204,15 @@ void describe_maps(Visitor visitor)
     visitor("note.memory",
         "Memory is collected separately from timing. Requested bytes exclude dataset storage, borrowed "
         "pointees, tracking bookkeeping, allocator metadata/rounding and process RSS.");
+    visitor("note.coreclr",
+        "SHash headers and iterators are compiled unchanged with standalone type/contract declarations; "
+        "VM contracts/DAC infrastructure are not included. Native Add retains duplicates. "
+        "STL alternatives are hash containers; Abseil alternatives are B-trees and have no reserve operation. "
+        "SHash reserve converts element count to slots using the native density policy. "
+        "Replacement/erase timings use unique-key populations; key-specific lookup among duplicates is unordered.");
+    visitor("scenario.duplicate_build",
+        "Size is the distinct-key count. Each iteration builds two entries per key, then destroys the collection; "
+        "CPU ns/key includes both insertions and destruction. Memory footprint is per distinct key, not per entry.");
     visitor("warning.duplicate_after_deletion",
         "Known functional defect: u32 can insert a duplicate key after deletion. "
         "Other specializations share its core but were not independently reproduced. "

@@ -24,6 +24,9 @@ License notices remain in all submodules.
 | `ptr` | `dn_simdhash_ptr_ptr` | `std::unordered_map<void*, void*>` | `absl::flat_hash_map<void*, void*>` |
 | `ptrpair` | `dn_simdhash_ptrpair_ptr` | `std::unordered_map<dn_ptrpair_t, void*, PointerPairHash, PointerPairEqual>` | `absl::flat_hash_map<dn_ptrpair_t, void*, PointerPairHash, PointerPairEqual>` |
 | `string` | `dn_simdhash_string_ptr` | `std::unordered_map<const char*, void*, CStringHash, CStringEqual>` | `absl::flat_hash_map<const char*, void*, CStringAbseilHash, CStringEqual>` |
+| `shash` | `SHash<MapSHashTraits<uint32_t, void*>>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
+| `mapshash` | `MapSHash<uint32_t, void*>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
+| `setshash` | `SetSHash<uint32_t>` | `std::unordered_multiset<uint32_t>` | `absl::btree_multiset<uint32_t>` |
 
 | Contract | Policy |
 |---|---|
@@ -31,6 +34,12 @@ License notices remain in all submodules.
 | Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
 | Strings | NUL-terminated; content equality; STL/Abseil hash string views |
 | String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |
+| CoreCLR integration | Unchanged pinned headers; standalone types/contracts in `src/coreclr_compat.h` |
+| CoreCLR duplicates | Retained; duplicate-build measures population, duplicate insertion, destruction |
+| CoreCLR sentinels | Key `0` reserved; `UINT32_MAX` also reserved for remove-enabled `shash` |
+| CoreCLR removal | `shash` erases all matches; default `mapshash`/`setshash` have no removal |
+| CoreCLR alternatives | STL hash containers vs. Abseil B-trees; B-trees have no reserve |
+| CoreCLR memory | Array allocations tracked only in untimed memory/test binaries |
 
 ## Requirements and setup
 

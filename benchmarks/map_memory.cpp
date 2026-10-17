@@ -13,7 +13,7 @@ void print_cases(const char* implementation, bool& first)
 {
     for (const char* scenario : dnvm::MemoryScenarios)
     {
-        if (!Map::supports_replace && std::string(scenario) == "replace")
+        if (!dnvm::supports_scenario<Map>(scenario))
             continue;
         for (std::uint32_t size : dnvm::MemorySizes)
         {

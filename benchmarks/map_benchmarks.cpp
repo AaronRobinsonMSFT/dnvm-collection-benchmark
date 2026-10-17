@@ -66,6 +66,20 @@ void duplicate(benchmark::State& state)
 }
 
 template <typename Map>
+void duplicate_build(benchmark::State& state)
+{
+    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    for (auto _ : state)
+    {
+        Map map;
+        dnvm::populate(map, data);
+        dnvm::populate(map, data);
+        benchmark::DoNotOptimize(map.size());
+    }
+    state.SetItemsProcessed(state.iterations() * state.range(0) * 2);
+}
+
+template <typename Map>
 void replace(benchmark::State& state)
 {
     dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
@@ -164,10 +178,14 @@ void register_map(const std::string& name)
         add("lookup_miss", [](benchmark::State& state) { lookup<Map>(state, false); });
         add("build_growing", [](benchmark::State& state) { insert<Map>(state, false); });
         add("build_reserved", [](benchmark::State& state) { insert<Map>(state, true); });
-        add("duplicate", duplicate<Map>);
+        if constexpr (Map::allows_duplicates)
+            add("duplicate_build", duplicate_build<Map>);
+        else
+            add("duplicate", duplicate<Map>);
         if constexpr (Map::supports_replace)
             add("replace", replace<Map>);
-        add("erase_insert", erase_insert<Map>);
+        if constexpr (Map::supports_remove)
+            add("erase_insert", erase_insert<Map>);
         add("iterate", iterate<Map>);
         add("clear_refill", clear_refill<Map>);
     }

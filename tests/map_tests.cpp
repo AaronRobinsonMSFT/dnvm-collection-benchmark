@@ -533,6 +533,185 @@ void native_memory_sizes()
     REQUIRE(account.stats().allocated_bytes == account.stats().freed_bytes);
     REQUIRE(account.live_allocations() == 0);
 }
+
+template <typename Map>
+void coreclr_contract(std::uint32_t count)
+{
+    dnvm::MapDataset<Map> data(count);
+    Map map;
+    int sentinel = 1;
+    void* value = &sentinel;
+    REQUIRE(map.size() == 0);
+    REQUIRE(!map.find(data.hits.front(), value));
+    REQUIRE(value == &sentinel);
+    dnvm::populate(map, data);
+    dnvm::populate(map, data);
+    REQUIRE(map.size() == count * 2);
+    map.reserve(count * 4);
+    std::vector<unsigned> visits(count);
+    std::unordered_map<std::uint32_t, std::size_t> indices;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        indices.emplace(data.hits[i], i);
+        REQUIRE(map.find(data.hits[i], value));
+        REQUIRE(value == (Map::is_set ? nullptr : &data.values[i]));
+        REQUIRE(!map.find(data.misses[i], value));
+    }
+    auto visitor = [&](std::uint32_t key, void* item) {
+        const auto index = indices.at(key);
+        REQUIRE(item == (Map::is_set ? nullptr : &data.values[index]));
+        ++visits[index];
+    };
+    map.visit(visitor);
+    for (auto visited : visits)
+        REQUIRE(visited == 2);
+
+    if constexpr (Map::supports_replace)
+    {
+        REQUIRE(!map.replace(data.misses.front(), &sentinel));
+        REQUIRE(map.replace(data.hits.front(), &sentinel));
+        unsigned replacements = 0;
+        auto replacement_visitor = [&](std::uint32_t key, void* item) {
+            if (key == data.hits.front() && item == &sentinel)
+                ++replacements;
+        };
+        map.visit(replacement_visitor);
+        REQUIRE(replacements == 1);
+        REQUIRE(map.size() == count * 2);
+    }
+    if constexpr (Map::supports_remove)
+    {
+        for (auto key : data.hits)
+        {
+            REQUIRE(map.erase(key));
+            REQUIRE(!map.erase(key));
+            REQUIRE(!map.find(key, value));
+        }
+        REQUIRE(map.size() == 0);
+    }
+    map.clear();
+    map.clear();
+    REQUIRE(map.size() == 0);
+    dnvm::populate(map, data);
+    REQUIRE(map.size() == count);
+}
+
+template <typename Family>
+void coreclr_family_contract(std::uint32_t count)
+{
+    coreclr_contract<typename Family::RuntimeMap>(count);
+    coreclr_contract<typename Family::StdMap>(count);
+    coreclr_contract<typename Family::AbseilMap>(count);
+    using Counted = dnvm::CountedMaps<Family>;
+    dnvm::MemoryAccount account;
+    {
+        dnvm::MemoryScope scope(account);
+        coreclr_contract<typename Counted::RuntimeMap>(count);
+        coreclr_contract<typename Counted::StdMap>(count);
+        coreclr_contract<typename Counted::AbseilMap>(count);
+    }
+    REQUIRE(account.stats().allocations > 0);
+    REQUIRE(account.stats().allocations == account.stats().deallocations);
+    REQUIRE(account.stats().allocated_bytes == account.stats().freed_bytes);
+    REQUIRE(account.live_allocations() == 0);
+}
+
+template <typename Map>
+void coreclr_sentinels()
+{
+    Map map;
+    for (std::uint32_t key : {0u, std::numeric_limits<std::uint32_t>::max()})
+    {
+        if (key == 0 || Map::supports_remove)
+        {
+            bool rejected = false;
+            try
+            {
+                map.insert(key, nullptr);
+            }
+            catch (const std::invalid_argument&)
+            {
+                rejected = true;
+            }
+            REQUIRE(rejected);
+            REQUIRE(map.size() == 0);
+        }
+        else
+        {
+            REQUIRE(map.insert(key, nullptr));
+            void* value = &map;
+            REQUIRE(map.find(key, value));
+            REQUIRE(value == nullptr);
+            map.clear();
+        }
+    }
+    bool rejected = false;
+    try
+    {
+        map.reserve(std::numeric_limits<std::uint32_t>::max());
+    }
+    catch (const std::bad_alloc&)
+    {
+        rejected = true;
+    }
+    REQUIRE(rejected);
+    REQUIRE(map.size() == 0);
+}
+
+template <typename Map>
+void coreclr_memory()
+{
+    const auto lookup = dnvm::measure_memory<Map>("lookup_hit", 64);
+    REQUIRE(lookup.before_heap_bytes > 0);
+    REQUIRE(lookup.before_heap_bytes == lookup.after_heap_bytes);
+    REQUIRE(lookup.traffic.allocations == 0);
+    REQUIRE(lookup.after_destroy_heap_bytes == 0);
+    const auto duplicates = dnvm::measure_memory<Map>("duplicate_build", 64);
+    REQUIRE(duplicates.includes_destruction);
+    REQUIRE(duplicates.before_heap_bytes == 0);
+    REQUIRE(duplicates.after_heap_bytes > 0);
+    REQUIRE(duplicates.traffic.allocations == duplicates.traffic.deallocations);
+    REQUIRE(duplicates.traffic.allocated_bytes == duplicates.traffic.freed_bytes);
+    REQUIRE(duplicates.after_destroy_heap_bytes == 0);
+}
+
+void coreclr_native_memory()
+{
+    dnvm::MemoryAccount account;
+    {
+        dnvm::MemoryScope scope(account);
+        dnvm::CoreSHash map;
+        REQUIRE(account.stats().allocations == 0);
+        REQUIRE(map.insert(1, nullptr));
+        REQUIRE(account.stats().allocations == 1);
+        REQUIRE(account.stats().live_bytes ==
+                11 * sizeof(SHash<MapSHashTraits<std::uint32_t, void*>>::element_t));
+        map.clear();
+        REQUIRE(account.stats().live_bytes == 0);
+    }
+    // Array ownership survives a scope boundary; bookkeeping is not counted.
+    void* block;
+    {
+        dnvm::MemoryScope scope(account);
+        account.begin_phase();
+        block = ::operator new[](19, std::nothrow);
+        REQUIRE(block != nullptr);
+        REQUIRE(account.stats().allocations == 1);
+        REQUIRE(account.stats().allocated_bytes == 19);
+    }
+    ::operator delete[](block, std::nothrow);
+    REQUIRE(account.stats().freed_bytes == 19);
+    REQUIRE(account.live_allocations() == 0);
+    block = ::operator new[](7);
+    {
+        dnvm::MemoryScope scope(account);
+        account.begin_phase();
+        ::operator delete[](block);
+        REQUIRE(account.stats().allocations == 0);
+        REQUIRE(account.stats().deallocations == 0);
+        REQUIRE(::operator new[](std::numeric_limits<std::size_t>::max(), std::nothrow) == nullptr);
+    }
+}
 }
 
 int main(int argc, char** argv)
@@ -553,17 +732,27 @@ int main(int argc, char** argv)
             family_contract<dnvm::PointerMaps>(count);
             family_contract<dnvm::PointerPairMaps>(count);
             family_contract<dnvm::StringMaps>(count);
+            coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreSHash>>(count);
+            coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreMapSHash>>(count);
+            coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreSetSHash>>(count);
         }
         memory_accounting();
         memory_phases();
         memory_scope_checks();
         native_memory_sizes();
+        coreclr_sentinels<dnvm::CoreSHash>();
+        coreclr_sentinels<dnvm::CoreMapSHash>();
+        coreclr_sentinels<dnvm::CoreSetSHash>();
+        coreclr_native_memory();
+        coreclr_memory<dnvm::CoreSHash>();
+        coreclr_memory<dnvm::CoreMapSHash>();
+        coreclr_memory<dnvm::CoreSetSHash>();
         allocation_failure();
         key_allocation_failure<dnvm::RuntimePointerMap>();
         key_allocation_failure<dnvm::RuntimePointerPairMap>();
         key_allocation_failure<dnvm::RuntimeStringMap>();
         precomputed_hash();
-        std::cout << "Passed: four key families, runtime allocation failures, precomputed hashes; SIMD="
+        std::cout << "Passed: SIMD key families, CoreCLR hash collections, allocation accounting/failures; SIMD="
                   << dnvm_runtime_simd_path() << "\n";
         return 0;
     }

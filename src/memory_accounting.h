@@ -129,7 +129,8 @@ private:
     std::unordered_map<void*, std::size_t> blocks_;
 };
 
-// Only counting allocators consult this scope; the ledger uses the normal allocator.
+// Counting allocators and untimed SHash array tracking consult this scope.
+// The ledger uses ordinary scalar allocation.
 class MemoryScope
 {
 public:
@@ -149,6 +150,7 @@ public:
             throw std::logic_error("A counting allocator requires an active MemoryScope");
         return *active_;
     }
+    static MemoryAccount* active() { return active_; }
 
 private:
     inline static thread_local MemoryAccount* active_ = nullptr;
@@ -231,6 +233,28 @@ struct CountedMaps
 using CountedRuntimeMap = CountedMaps<U32Maps>::RuntimeMap;
 using CountedStdMap = CountedMaps<U32Maps>::StdMap;
 using CountedAbseilMap = CountedMaps<U32Maps>::AbseilMap;
+
+template <typename Runtime>
+struct CountedMaps<CoreClrFamily<Runtime>>
+{
+    using Key = typename Runtime::key_type;
+    static constexpr bool is_set = Runtime::is_set;
+    using RuntimeMap = Runtime;
+    using PairAllocator = CountingAllocator<std::pair<const Key, void*>>;
+    using KeyAllocator = CountingAllocator<Key>;
+    using StdContainer = std::conditional_t<is_set,
+        std::unordered_multiset<Key, std::hash<Key>, std::equal_to<Key>, KeyAllocator>,
+        std::unordered_multimap<Key, void*, std::hash<Key>, std::equal_to<Key>, PairAllocator>>;
+    using AbseilContainer = std::conditional_t<is_set,
+        absl::btree_multiset<Key, std::less<Key>, KeyAllocator>,
+        absl::btree_multimap<Key, void*, std::less<Key>, PairAllocator>>;
+    using StdMap = StandardMultiMap<StdContainer, is_set, Runtime::supports_remove>;
+    using AbseilMap = StandardMultiMap<AbseilContainer, is_set, Runtime::supports_remove>;
+    static_assert(sizeof(StdMap) == sizeof(typename CoreClrFamily<Runtime>::StdMap),
+                  "Tracking changed std object size");
+    static_assert(sizeof(AbseilMap) == sizeof(typename CoreClrFamily<Runtime>::AbseilMap),
+                  "Tracking changed Abseil object size");
+};
 
 static_assert(sizeof(CountedRuntimeMap) == sizeof(RuntimeMap), "Tracking changed runtime object size");
 static_assert(sizeof(CountedStdMap) == sizeof(StdMap), "Tracking changed std object size");
