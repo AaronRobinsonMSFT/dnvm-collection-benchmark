@@ -1,0 +1,9 @@
+[submodule "external/runtime"]
+	path = external/runtime
+	url = https://github.com/dotnet/runtime.git
+[submodule "external/abseil-cpp"]
+	path = external/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "external/benchmark"]
+	path = external/benchmark
+	url = https://github.com/google/benchmark.git
