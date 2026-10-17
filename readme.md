@@ -18,7 +18,19 @@ License notices remain in all submodules.
 
 ## Current scope
 
-- `dn_simdhash_u32_ptr` (`uint32_t` keys, borrowed `void*` values), compared with `std::unordered_map` and `absl::flat_hash_map` using the same types.
+| Collection | Runtime | STL | Abseil |
+|---|---|---|---|
+| `u32` | `dn_simdhash_u32_ptr` | `std::unordered_map<uint32_t, void*>` | `absl::flat_hash_map<uint32_t, void*>` |
+| `ptr` | `dn_simdhash_ptr_ptr` | `std::unordered_map<void*, void*>` | `absl::flat_hash_map<void*, void*>` |
+| `ptrpair` | `dn_simdhash_ptrpair_ptr` | `std::unordered_map<dn_ptrpair_t, void*, PointerPairHash, PointerPairEqual>` | `absl::flat_hash_map<dn_ptrpair_t, void*, PointerPairHash, PointerPairEqual>` |
+| `string` | `dn_simdhash_string_ptr` | `std::unordered_map<const char*, void*, CStringHash, CStringEqual>` | `absl::flat_hash_map<const char*, void*, CStringAbseilHash, CStringEqual>` |
+
+| Contract | Policy |
+|---|---|
+| Ownership | Borrowed keys and values; key storage excluded from collection memory |
+| Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
+| Strings | NUL-terminated; content equality; STL/Abseil hash string views |
+| String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |
 
 ## Requirements and setup
 
@@ -51,7 +63,7 @@ cmake --build build/release --config Release --parallel
 python3 scripts/run.py --build build/release --output results/local
 ```
 
-Use a new output directory for each run.
+All collections run automatically. Use a new output directory for each run.
 
 ## Collection and results
 

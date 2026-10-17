@@ -3,6 +3,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #include "dataset.h"
@@ -95,6 +96,118 @@ void contract(std::uint32_t count)
     REQUIRE(map.size() == data.hits.size());
 }
 
+template <typename Map>
+void key_contract(std::uint32_t count)
+{
+    using Key = typename Map::key_type;
+    dnvm::MapDataset<Map> data(count);
+    Map map;
+    int sentinel = 1;
+    void* value = &sentinel;
+    REQUIRE(!map.find(data.hit_queries.front(), value));
+    REQUIRE(value == &sentinel);
+    REQUIRE(!map.erase(data.misses.front()));
+    dnvm::populate(map, data);
+    map.reserve(count * 2);
+    std::unordered_map<Key, void*, typename dnvm::KeyTraits<Key>::Hash,
+                       typename dnvm::KeyTraits<Key>::Equal> expected;
+    for (std::size_t i = 0; i < data.hits.size(); ++i)
+    {
+        REQUIRE(map.find(data.hit_queries[i], value));
+        REQUIRE(value == &data.values[i]);
+        REQUIRE(!map.find(data.misses[i], value));
+        REQUIRE(value == &data.values[i]);
+        REQUIRE(!map.insert(data.hit_queries[i], &sentinel));
+        REQUIRE(map.find(data.hit_queries[i], value));
+        REQUIRE(value == &data.values[i]);
+        if constexpr (Map::supports_replace)
+        {
+            REQUIRE(!map.replace(data.misses[i], &sentinel));
+            REQUIRE(map.replace(data.hit_queries[i], nullptr));
+            REQUIRE(map.find(data.hit_queries[i], value));
+            REQUIRE(value == nullptr);
+            REQUIRE(map.replace(data.hit_queries[i], &data.values[i]));
+        }
+        expected.emplace(data.hits[i], &data.values[i]);
+        REQUIRE(map.erase(data.hit_queries[i]));
+        REQUIRE(!map.erase(data.hit_queries[i]));
+        REQUIRE(map.insert(data.hits[i], &data.values[i]));
+    }
+    REQUIRE(map.size() == count);
+    auto visitor = [&expected](Key key, void* item) {
+        REQUIRE(expected.at(key) == item);
+        REQUIRE(expected.erase(key) == 1);
+    };
+    map.visit(visitor);
+    REQUIRE(expected.empty());
+    for (std::size_t i = 0; i < data.hits.size(); i += 2)
+        REQUIRE(map.erase(data.hit_queries[i]));
+    for (std::size_t i = 0; i < data.hits.size(); ++i)
+        REQUIRE(map.find(data.hit_queries[i], value) == (i % 2 != 0));
+    map.clear();
+    map.clear();
+    REQUIRE(map.size() == 0);
+    for (auto key : data.hit_queries)
+        REQUIRE(!map.find(key, value));
+    dnvm::populate(map, data);
+    REQUIRE(map.size() == count);
+}
+
+template <typename Map>
+void key_edges()
+{
+    using Key = typename Map::key_type;
+    Map map;
+    int first = 1, second = 2;
+    std::vector<Key> keys;
+    if constexpr (std::is_same_v<Key, void*>)
+        keys = {nullptr, &first, &second};
+    else if constexpr (std::is_same_v<Key, dn_ptrpair_t>)
+        keys = {{nullptr, nullptr}, {&first, nullptr}, {nullptr, &first},
+                {&first, &second}, {&second, &first}};
+    else
+        keys = {"", "key", "key-prefix", "\xc4\xb0", "\xf0\x9f\x98\x80"};
+    for (auto key : keys)
+    {
+        REQUIRE(map.insert(key, nullptr));
+        void* value = &first;
+        REQUIRE(map.find(key, value));
+        REQUIRE(value == nullptr);
+    }
+    REQUIRE(map.size() == keys.size());
+    if constexpr (std::is_same_v<Key, const char*>)
+    {
+        char same_content[] = "key";
+        void* value = &first;
+        REQUIRE(map.find(same_content, value));
+        REQUIRE(value == nullptr);
+        REQUIRE(!map.insert(same_content, &first));
+        REQUIRE(map.erase(same_content));
+        REQUIRE(!map.find("key", value));
+    }
+}
+
+template <typename Family>
+void family_contract(std::uint32_t count)
+{
+    key_contract<typename Family::RuntimeMap>(count);
+    key_contract<typename Family::StdMap>(count);
+    key_contract<typename Family::AbseilMap>(count);
+    dnvm::MemoryAccount account;
+    {
+        dnvm::MemoryScope scope(account);
+        using Counted = dnvm::CountedMaps<Family>;
+        key_contract<typename Counted::RuntimeMap>(count);
+        key_contract<typename Counted::StdMap>(count);
+        key_contract<typename Counted::AbseilMap>(count);
+    }
+    REQUIRE(account.live_allocations() == 0);
+    REQUIRE(account.stats().live_bytes == 0);
+    key_edges<typename Family::RuntimeMap>();
+    key_edges<typename Family::StdMap>();
+    key_edges<typename Family::AbseilMap>();
+}
+
 struct FailingAllocator
 {
     dn_allocator_t allocator;
@@ -131,6 +244,84 @@ struct FailingAllocator
         allocator._vtable = &vtable;
     }
 };
+
+template <typename Map>
+void key_allocation_failure()
+{
+    dnvm::MapDataset<Map> data(4096);
+    for (std::size_t failure = 1; failure <= 3; ++failure)
+    {
+        FailingAllocator allocator;
+        allocator.fail_at = failure;
+        bool rejected = false;
+        try
+        {
+            Map map(0, &allocator.allocator);
+        }
+        catch (const std::bad_alloc&)
+        {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+        REQUIRE(allocator.live == 0);
+    }
+    for (std::size_t failure = 1; failure <= 2; ++failure)
+    {
+        FailingAllocator allocator;
+        {
+            Map map(0, &allocator.allocator);
+            REQUIRE(map.insert(data.hits.front(), nullptr));
+            allocator.fail_at = allocator.calls + failure;
+            bool rejected = false;
+            try
+            {
+                map.reserve(4096);
+            }
+            catch (const std::bad_alloc&)
+            {
+                rejected = true;
+            }
+            REQUIRE(rejected);
+            void* value = &allocator;
+            REQUIRE(map.find(data.hit_queries.front(), value));
+            REQUIRE(value == nullptr);
+            REQUIRE(map.size() == 1);
+        }
+        REQUIRE(allocator.live == 0);
+    }
+    for (std::size_t failure = 1; failure <= 2; ++failure)
+    {
+        FailingAllocator allocator;
+        {
+            Map map(0, &allocator.allocator);
+            const std::size_t original_calls = allocator.calls;
+            allocator.fail_at = original_calls + failure;
+            std::size_t inserted = 0;
+            bool rejected = false;
+            try
+            {
+                while (inserted < data.hits.size())
+                {
+                    REQUIRE(map.insert(data.hits[inserted], &data.values[inserted]));
+                    ++inserted;
+                }
+            }
+            catch (const std::bad_alloc&)
+            {
+                rejected = true;
+            }
+            REQUIRE(rejected);
+            REQUIRE(map.size() == inserted);
+            for (std::size_t i = 0; i < inserted; ++i)
+            {
+                void* value = nullptr;
+                REQUIRE(map.find(data.hit_queries[i], value));
+                REQUIRE(value == &data.values[i]);
+            }
+        }
+        REQUIRE(allocator.live == 0);
+    }
+}
 
 void allocation_failure()
 {
@@ -359,14 +550,20 @@ int main(int argc, char** argv)
             counted_contract<dnvm::CountedRuntimeMap>(count);
             counted_contract<dnvm::CountedStdMap>(count);
             counted_contract<dnvm::CountedAbseilMap>(count);
+            family_contract<dnvm::PointerMaps>(count);
+            family_contract<dnvm::PointerPairMaps>(count);
+            family_contract<dnvm::StringMaps>(count);
         }
         memory_accounting();
         memory_phases();
         memory_scope_checks();
         native_memory_sizes();
         allocation_failure();
+        key_allocation_failure<dnvm::RuntimePointerMap>();
+        key_allocation_failure<dnvm::RuntimePointerPairMap>();
+        key_allocation_failure<dnvm::RuntimeStringMap>();
         precomputed_hash();
-        std::cout << "Passed: three map contracts, runtime allocation failures, precomputed hashes; SIMD="
+        std::cout << "Passed: four key families, runtime allocation failures, precomputed hashes; SIMD="
                   << dnvm_runtime_simd_path() << "\n";
         return 0;
     }

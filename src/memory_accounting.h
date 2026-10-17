@@ -197,20 +197,40 @@ public:
     bool operator!=(const CountingAllocator<U>&) const { return false; }
 };
 
-class CountedRuntimeMap : public RuntimeMap
+template <typename Map>
+class CountedRuntimeMapAdapter : public Map
 {
 public:
-    explicit CountedRuntimeMap(std::uint32_t capacity = 0)
-        : RuntimeMap(capacity, MemoryScope::current().native_allocator()) {}
+    explicit CountedRuntimeMapAdapter(std::uint32_t capacity = 0)
+        : Map(capacity, MemoryScope::current().native_allocator()) {}
 };
 
-using CountedStdMap = StandardMap<std::unordered_map<
-    std::uint32_t, void*, std::hash<std::uint32_t>, std::equal_to<std::uint32_t>,
-    CountingAllocator<std::pair<const std::uint32_t, void*>>>>;
-using CountedAbseilMap = StandardMap<absl::flat_hash_map<
-    std::uint32_t, void*, absl::flat_hash_map<std::uint32_t, void*>::hasher,
-    absl::flat_hash_map<std::uint32_t, void*>::key_equal,
-    CountingAllocator<std::pair<const std::uint32_t, void*>>>>;
+template <typename Family>
+struct CountedMaps
+{
+    using Key = typename Family::RuntimeMap::key_type;
+    using StdContainer = typename Family::StdMap::container_type;
+    using AbseilContainer = typename Family::AbseilMap::container_type;
+    using Allocator = CountingAllocator<std::pair<const Key, void*>>;
+    using RuntimeMap = CountedRuntimeMapAdapter<typename Family::RuntimeMap>;
+    using StdMap = StandardMap<std::unordered_map<
+        Key, void*, typename StdContainer::hasher, typename StdContainer::key_equal, Allocator>,
+        Family::RuntimeMap::supports_replace>;
+    using AbseilMap = StandardMap<absl::flat_hash_map<
+        Key, void*, typename AbseilContainer::hasher, typename AbseilContainer::key_equal, Allocator>,
+        Family::RuntimeMap::supports_replace>;
+
+    static_assert(sizeof(RuntimeMap) == sizeof(typename Family::RuntimeMap),
+                  "Tracking changed runtime object size");
+    static_assert(sizeof(StdMap) == sizeof(typename Family::StdMap),
+                  "Tracking changed std object size");
+    static_assert(sizeof(AbseilMap) == sizeof(typename Family::AbseilMap),
+                  "Tracking changed Abseil object size");
+};
+
+using CountedRuntimeMap = CountedMaps<U32Maps>::RuntimeMap;
+using CountedStdMap = CountedMaps<U32Maps>::StdMap;
+using CountedAbseilMap = CountedMaps<U32Maps>::AbseilMap;
 
 static_assert(sizeof(CountedRuntimeMap) == sizeof(RuntimeMap), "Tracking changed runtime object size");
 static_assert(sizeof(CountedStdMap) == sizeof(StdMap), "Tracking changed std object size");

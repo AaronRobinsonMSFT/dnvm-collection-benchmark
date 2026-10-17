@@ -10,7 +10,6 @@ from pathlib import Path
 import statistics
 
 
-IMPLEMENTATIONS = ("runtime", "std", "abseil")
 NANOSECONDS = {"ns": 1, "us": 1000, "ms": 1_000_000, "s": 1_000_000_000}
 MEMORY_CONTEXT_FIELDS = (
     "compiler", "build_type", "system", "architecture", "pointer_bits", "runtime_simd",
@@ -40,6 +39,35 @@ def build_settings(path):
     return settings
 
 
+def split_name(name):
+    parts = name.split("/")
+    if len(parts) == 3:
+        parts.insert(0, "")
+    if len(parts) != 4 or not all(parts[1:]):
+        raise ValueError("Invalid benchmark name: " + name)
+    collection, implementation, scenario, count = parts
+    if int(count) <= 0:
+        raise ValueError("Invalid benchmark name: " + name)
+    return collection, implementation, scenario, int(count)
+
+
+def comparison_inventory(expected_names):
+    inventory = {}
+    for name in expected_names:
+        collection, implementation, _, _ = split_name(name)
+        implementations = inventory.setdefault(collection, [])
+        if implementation not in implementations:
+            implementations.append(implementation)
+    return inventory
+
+
+def baseline_for(collection, implementations, context):
+    baseline = context.get("baseline." + collection, context.get("baseline", implementations[0]))
+    if baseline not in implementations:
+        raise ValueError("Missing comparison baseline: " + baseline)
+    return baseline
+
+
 def summarize(document, metadata):
     if metadata["repetitions"] < 3:
         raise ValueError("At least three repetitions are required")
@@ -49,8 +77,6 @@ def summarize(document, metadata):
     context = document["context"]
     if context["build_type"] != "Release" or context["sanitizers"] != "0":
         raise ValueError("Performance reports require a Release build without sanitizers")
-    if context["runtime_simd"] not in ("neon", "sse2"):
-        raise ValueError("Unexpected runtime SIMD implementation")
     for dependency, revision in metadata["dependencies"].items():
         if context[dependency + "_revision"] != revision["commit"]:
             raise ValueError("Binary/dependency revision mismatch: " + dependency)
@@ -80,37 +106,46 @@ def summarize(document, metadata):
     for name, repetitions in sorted(samples.items()):
         if len(repetitions) != metadata["repetitions"]:
             raise ValueError("Missing repetitions: " + name)
-        implementation, scenario, count_text = name.split("/")
-        if implementation not in IMPLEMENTATIONS or int(count_text) <= 0:
-            raise ValueError("Invalid benchmark name: " + name)
-        times = [repetitions[index] / int(count_text) for index in sorted(repetitions)]
-        groups.setdefault((scenario, int(count_text)), {})[implementation] = {
+        collection, implementation, scenario, count = split_name(name)
+        times = [repetitions[index] / count for index in sorted(repetitions)]
+        implementations = groups.setdefault((collection, scenario, count), {})
+        if implementation in implementations:
+            raise ValueError("Duplicate comparison implementation: " + name)
+        implementations[implementation] = {
             "median_ns_per_key": statistics.median(times),
             "cv_percent": statistics.stdev(times) / statistics.mean(times) * 100,
             "samples_ns_per_key": times,
         }
     rows = []
-    for (scenario, count), implementations in sorted(groups.items()):
-        if set(implementations) != set(IMPLEMENTATIONS):
+    inventory = comparison_inventory(metadata["expected_benchmarks"])
+    for (collection, scenario, count), implementations in sorted(groups.items()):
+        expected_implementations = inventory[collection]
+        if set(implementations) != set(expected_implementations):
             raise ValueError("Missing comparison implementation: " + scenario)
-        baseline = implementations["runtime"]["median_ns_per_key"]
-        for implementation in IMPLEMENTATIONS:
+        baseline_name = baseline_for(collection, expected_implementations, context)
+        baseline = implementations[baseline_name]["median_ns_per_key"]
+        for implementation in expected_implementations:
             result = implementations[implementation]
             rows.append({
+                "collection": collection,
                 "scenario": scenario,
                 "size": count,
                 "implementation": implementation,
                 **result,
-                "speedup_vs_runtime": baseline / result["median_ns_per_key"],
+                "baseline_implementation": baseline_name,
+                "speedup_vs_baseline": baseline / result["median_ns_per_key"],
             })
     return rows
 
 
 def validate_memory(document, context, expected_names):
-    if document["schema_version"] != 1:
+    if document["schema_version"] not in (1, 2):
         raise ValueError("Unsupported memory-accounting schema")
     for key in MEMORY_CONTEXT_FIELDS:
         if document["context"][key] != context[key]:
+            raise ValueError("CPU/memory configuration mismatch: " + key)
+    for key, value in document["context"].items():
+        if key not in context or context[key] != value:
             raise ValueError("CPU/memory configuration mismatch: " + key)
     fields = (
         "object_bytes", "before_heap_bytes", "after_heap_bytes", "after_destroy_heap_bytes",
@@ -127,8 +162,7 @@ def validate_memory(document, context, expected_names):
         seen.add(name)
         if any(type(row[key]) is not int or row[key] < 0 for key in fields):
             raise ValueError("Invalid memory counters: " + name)
-        implementation, scenario, count = name.split("/")
-        size = int(count)
+        collection, implementation, scenario, size = split_name(name)
         if (row["before_heap_bytes"] + row["allocated_bytes"] - row["freed_bytes"]
                 != row["end_heap_bytes"]):
             raise ValueError("Unbalanced memory bytes: " + name)
@@ -137,33 +171,44 @@ def validate_memory(document, context, expected_names):
             raise ValueError("Invalid memory peak: " + name)
         if row["after_destroy_heap_bytes"] != 0:
             raise ValueError("Memory case leaked allocations: " + name)
-        build = scenario in ("build_growing", "build_reserved")
-        if build:
+        includes_destruction = row.get("includes_destruction")
+        if document["schema_version"] == 2 and type(includes_destruction) is not bool:
+            raise ValueError("Missing or invalid measurement boundary: " + name)
+        if includes_destruction is True:
             if (row["before_heap_bytes"] != 0 or row["end_heap_bytes"] != 0
                     or row["allocations"] != row["deallocations"]):
-                raise ValueError("Invalid build memory boundary: " + name)
-        elif row["end_heap_bytes"] != row["after_heap_bytes"]:
+                raise ValueError("Invalid lifecycle memory boundary: " + name)
+        elif includes_destruction is False and row["end_heap_bytes"] != row["after_heap_bytes"]:
             raise ValueError("Invalid operation memory boundary: " + name)
-        if implementation in object_sizes and object_sizes[implementation] != row["object_bytes"]:
+        identity = (collection, implementation)
+        if identity in object_sizes and object_sizes[identity] != row["object_bytes"]:
             raise ValueError("Inconsistent memory object size: " + name)
-        object_sizes[implementation] = row["object_bytes"]
+        object_sizes[identity] = row["object_bytes"]
         footprint = row["object_bytes"] + row["after_heap_bytes"]
         cases.append({
-            **row, "implementation": implementation, "scenario": scenario, "size": size,
+            **row, "collection": collection, "implementation": implementation,
+            "scenario": scenario, "size": size,
             "footprint_bytes": footprint,
             "footprint_bytes_per_key": footprint / size,
             "peak_footprint_bytes": row["object_bytes"] + row["peak_heap_bytes"],
         })
     if seen != set(expected_names):
         raise ValueError("Missing memory cases")
-    sizes = {row["size"] for row in cases}
+    identities = {(row["collection"], row["implementation"], row["size"]) for row in cases}
+    modes = document.get("lifecycle_modes")
+    if document["schema_version"] == 1 and modes is None:
+        modes = list(dict.fromkeys(row["mode"] for row in document["lifecycles"]))
+    if (not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or not mode for mode in modes)
+            or len(modes) != len(set(modes))):
+        raise ValueError("Missing or invalid lifecycle modes")
     expected_lifecycles = {
-        (implementation, mode, size)
-        for implementation in IMPLEMENTATIONS for mode in ("growing", "reserved") for size in sizes
+        (collection, implementation, mode, size)
+        for collection, implementation, size in identities for mode in modes
     }
     seen_lifecycles = set()
     for row in document["lifecycles"]:
-        key = (row["implementation"], row["mode"], row["size"])
+        collection = row.get("collection", "")
+        key = (collection, row["implementation"], row["mode"], row["size"])
         if key not in expected_lifecycles or key in seen_lifecycles:
             raise ValueError("Duplicate or unexpected memory lifecycle")
         seen_lifecycles.add(key)
@@ -173,14 +218,14 @@ def validate_memory(document, context, expected_names):
             raise ValueError("Invalid memory lifecycle counters")
         if row["destroyed_heap_bytes"] != 0:
             raise ValueError("Memory lifecycle leaked allocations")
-        if row["object_bytes"] != object_sizes[row["implementation"]]:
+        if row["object_bytes"] != object_sizes[collection, row["implementation"]]:
             raise ValueError("Inconsistent lifecycle object size")
     if seen_lifecycles != expected_lifecycles:
         raise ValueError("Missing memory lifecycles")
     return {"cases": cases, "lifecycles": document["lifecycles"]}
 
 
-def memory_markdown(cases):
+def memory_markdown(cases, implementations):
     sizes = {}
     for row in cases:
         sizes.setdefault(row["size"], {})[row["implementation"]] = row
@@ -190,14 +235,14 @@ def memory_markdown(cases):
         "Post-batch collection footprint: inline object bytes plus live requested heap bytes.",
         "This is a separate instrumented run; no instrumented timings are reported.",
         "",
-        "| Keys | Runtime B/key | std B/key | Abseil B/key |",
-        "|---:|---:|---:|---:|",
+        "| Keys | " + " | ".join(name + " B/key" for name in implementations) + " |",
+        "|" + "---:|" * (len(implementations) + 1),
     ]
-    for size, implementations in sorted(sizes.items()):
-        lowest = min(row["footprint_bytes_per_key"] for row in implementations.values())
+    for size, entries in sorted(sizes.items()):
+        lowest = min(row["footprint_bytes_per_key"] for row in entries.values())
         cells = [str(size)]
-        for name in IMPLEMENTATIONS:
-            value = implementations[name]["footprint_bytes_per_key"]
+        for name in implementations:
+            value = entries[name]["footprint_bytes_per_key"]
             cell = f"{value:.3f}"
             cells.append(f"**{cell}**" if value == lowest else cell)
         lines.append("| " + " | ".join(cells) + " |")
@@ -206,8 +251,8 @@ def memory_markdown(cases):
         "<details>",
         "<summary>Memory details: exact bytes and allocation traffic</summary>",
         "",
-        "| Keys | Measure | Runtime | std | Abseil |",
-        "|---:|---|---:|---:|---:|",
+        "| Keys | Measure | " + " | ".join(implementations) + " |",
+        "|---:|---|" + "---:|" * len(implementations),
     ]
     metrics = (
         ("object_bytes", "Inline object bytes"),
@@ -220,15 +265,15 @@ def memory_markdown(cases):
         ("freed_bytes", "Bytes freed in measured batch"),
         ("after_destroy_heap_bytes", "Heap bytes after destruction"),
     )
-    for size, implementations in sorted(sizes.items()):
+    for size, entries in sorted(sizes.items()):
         for key, label in metrics:
             cells = [str(size), label]
-            cells += [f"{implementations[name][key]:,}" for name in IMPLEMENTATIONS]
+            cells += [f"{entries[name][key]:,}" for name in implementations]
             lines.append("| " + " | ".join(cells) + " |")
     return lines + ["", "</details>", ""]
 
 
-def lifecycle_markdown(lifecycles):
+def lifecycle_markdown(lifecycles, implementations):
     lines = [
         "## Lifecycle memory checkpoints",
         "",
@@ -236,7 +281,7 @@ def lifecycle_markdown(lifecycles):
         "Live-state footprints include inline object bytes; destroyed collections have zero footprint.",
         "",
     ]
-    for mode in ("growing", "reserved"):
+    for mode in dict.fromkeys(row["mode"] for row in lifecycles):
         sizes = {}
         for row in lifecycles:
             if row["mode"] == mode:
@@ -244,14 +289,14 @@ def lifecycle_markdown(lifecycles):
         lines += [
             f"### {mode}",
             "",
-            "| Keys | State | Runtime bytes | std bytes | Abseil bytes |",
-            "|---:|---|---:|---:|---:|",
+            "| Keys | State | " + " | ".join(name + " bytes" for name in implementations) + " |",
+            "|---:|---|" + "---:|" * len(implementations),
         ]
-        for size, implementations in sorted(sizes.items()):
+        for size, entries in sorted(sizes.items()):
             for state in ("empty", "populated", "cleared", "destroyed"):
                 cells = [str(size), state]
-                for name in IMPLEMENTATIONS:
-                    row = implementations[name]
+                for name in implementations:
+                    row = entries[name]
                     footprint = row[state + "_heap_bytes"]
                     if state != "destroyed":
                         footprint += row["object_bytes"]
@@ -274,12 +319,10 @@ def markdown(rows, context, metadata, memory=None):
         "the reader's judgment, informed by the collection contract and application requirements.",
         "",
         "Ratios compare implementations in this run only; higher speedup is faster.",
-        "Times are CPU ns/key. Build scenarios include construction, reservation, and destruction;",
-        "erase_insert includes both operations per key; clear_refill includes clearing and refilling.",
-        "Default hashes and allocation policies differ. CV is sample standard deviation / mean.",
+        "Times are CPU ns/key. CV is sample standard deviation / mean.",
         "",
         "**Bold** marks the lowest median time or accounted footprint in each row (including ties).",
-        "Speedup is relative to runtime: above 1x is faster; below 1x is slower.",
+        "Speedup is relative to the artifact's baseline: above 1x is faster; below 1x is slower.",
         "[!] marks CV above 5%; exact values are in the variability details below.",
         "",
         f"Compiler: {context['compiler']}; STL: {context['stdlib']}; "
@@ -288,24 +331,18 @@ def markdown(rows, context, metadata, memory=None):
         f"Repetitions: {metadata['repetitions']}; minimum CPU seconds/sample: {metadata['min_time']}.",
         "",
     ]
-    if metadata.get("functional_tests") == "not_run":
-        lines += [
-            "**Functional correctness:** not run during data collection. The functional suite",
-            "is reserved for separate Linux GCC and Clang validation.",
-            "",
-        ]
-    if metadata["known_duplicate_defect_reproduced"] is None:
-        lines += [
-            "**Known functional defect:** duplicate keys can be inserted after deletion.",
-            "The separate reproducer was not run during data collection.",
-            "",
-        ]
-    elif metadata["known_duplicate_defect_reproduced"]:
-        lines += [
-            "**Known functional defect:** the separate duplicate-after-deletion reproducer",
-            "detected an existing key being inserted again after deletion.",
-            "",
-        ]
+    details = {key: value for key, value in metadata.items()
+               if value is None or isinstance(value, (str, bool, int, float))}
+    if details:
+        lines += ["| Run setting | Value |", "|---|---|"]
+        lines += ["| " + key + " | " + str(value).replace("|", "\\|").replace("\n", "<br>") + " |"
+                  for key, value in details.items()]
+        lines.append("")
+    for key, value in context.items():
+        if key.startswith("note."):
+            lines += [value, ""]
+        elif key.startswith("warning."):
+            lines += ["**Warning:** " + value, ""]
     if any(row["cv_percent"] > 5 for row in rows):
         lines += ["**Noise warning:** some measurements have CV above 5%; inspect raw samples.", ""]
     for warning in metadata.get("measurement_warnings", []):
@@ -313,61 +350,77 @@ def markdown(rows, context, metadata, memory=None):
     if memory is not None:
         lines += [
             "**Memory accounting:** performance and memory are separate runs of the same configuration.",
-            "Each memory scenario executes one checked batch; builds include construction and destruction,",
-            "while other scenarios exclude initial population and final destruction from traffic counts.",
             "Footprint is sampled before destruction; peak includes pre-existing storage and transient growth.",
-            "Requested bytes exclude dataset storage, borrowed pointees, tracking bookkeeping, allocator",
-            "metadata/rounding, and process RSS. Stateless counting allocators preserve inline object sizes.",
+            "Each case records whether its allocation traffic includes destruction.",
             "",
         ]
-    scenarios = {}
-    for row in rows:
-        scenarios.setdefault(row["scenario"], {}).setdefault(row["size"], {})[
-            row["implementation"]
-        ] = row
-    for scenario, sizes in sorted(scenarios.items()):
-        lines += [
-            f"## {scenario}",
-            "",
-            "### Performance",
-            "",
-            "| Keys | Runtime ns/key | std ns/key (speedup) | Abseil ns/key (speedup) |",
-            "|---:|---:|---:|---:|",
-        ]
-        for size, implementations in sorted(sizes.items()):
-            fastest = min(row["median_ns_per_key"] for row in implementations.values())
-            cells = [str(size)]
-            for implementation in IMPLEMENTATIONS:
-                row = implementations[implementation]
-                cell = f"{row['median_ns_per_key']:.3f}"
-                if row["median_ns_per_key"] == fastest:
-                    cell = f"**{cell}**"
-                if implementation != "runtime":
-                    cell += f" ({row['speedup_vs_runtime']:.2f}x)"
-                if row["cv_percent"] > 5:
-                    cell += " [!]"
-                cells.append(cell)
-            lines.append("| " + " | ".join(cells) + " |")
-        lines.append("")
+    inventory = comparison_inventory(metadata["expected_benchmarks"])
+    for collection, implementation_names in inventory.items():
+        baseline = baseline_for(collection, implementation_names, context)
+        if collection:
+            lines += [f"## {collection}", ""]
+        description = context.get("collection." + collection)
+        if description:
+            lines += [description, ""]
+        lines += [f"Baseline: `{baseline}`.", ""]
+        scenarios = {}
+        for row in rows:
+            if row.get("collection", "") == collection:
+                scenarios.setdefault(row["scenario"], {}).setdefault(row["size"], {})[
+                    row["implementation"]
+                ] = row
+        for scenario, sizes in sorted(scenarios.items()):
+            lines += [f"{'###' if collection else '##'} {scenario}", ""]
+            description = context.get("scenario." + scenario)
+            if description:
+                lines += [description, ""]
+            lines += [
+                f"{'####' if collection else '###'} Performance",
+                "",
+                "| Keys | " + " | ".join(
+                    name + " ns/key" + (" (speedup)" if name != baseline else "")
+                    for name in implementation_names) + " |",
+                "|" + "---:|" * (len(implementation_names) + 1),
+            ]
+            for size, implementations in sorted(sizes.items()):
+                fastest = min(row["median_ns_per_key"] for row in implementations.values())
+                cells = [str(size)]
+                for implementation in implementation_names:
+                    row = implementations[implementation]
+                    cell = f"{row['median_ns_per_key']:.3f}"
+                    if row["median_ns_per_key"] == fastest:
+                        cell = f"**{cell}**"
+                    if implementation != baseline:
+                        cell += f" ({row['speedup_vs_baseline']:.2f}x)"
+                    if row["cv_percent"] > 5:
+                        cell += " [!]"
+                    cells.append(cell)
+                lines.append("| " + " | ".join(cells) + " |")
+            lines.append("")
+            if memory is not None:
+                section = memory_markdown([
+                    row for row in memory["cases"]
+                    if row.get("collection", "") == collection and row["scenario"] == scenario
+                ], implementation_names)
+                lines += ["#" + line if collection and line.startswith("#") else line for line in section]
         if memory is not None:
-            lines += memory_markdown([
-                row for row in memory["cases"] if row["scenario"] == scenario
-            ])
-    if memory is not None:
-        lines += lifecycle_markdown(memory["lifecycles"])
-    lines += [
-        "<details>",
-        "<summary>Variability details (CV %)</summary>",
-        "",
-        "| Scenario | Keys | Runtime CV % | std CV % | Abseil CV % |",
-        "|---|---:|---:|---:|---:|",
-    ]
-    for scenario, sizes in sorted(scenarios.items()):
-        for size, implementations in sorted(sizes.items()):
-            cells = [scenario, str(size)]
-            cells += [f"{implementations[name]['cv_percent']:.2f}" for name in IMPLEMENTATIONS]
-            lines.append("| " + " | ".join(cells) + " |")
-    lines += ["", "</details>"]
+            section = lifecycle_markdown([
+                row for row in memory["lifecycles"] if row.get("collection", "") == collection
+            ], implementation_names)
+            lines += ["#" + line if collection and line.startswith("#") else line for line in section]
+        lines += [
+            "<details>",
+            "<summary>Variability details (CV %)</summary>",
+            "",
+            "| Scenario | Keys | " + " | ".join(name + " CV %" for name in implementation_names) + " |",
+            "|---|---:|" + "---:|" * len(implementation_names),
+        ]
+        for scenario, sizes in sorted(scenarios.items()):
+            for size, implementations in sorted(sizes.items()):
+                cells = [scenario, str(size)]
+                cells += [f"{implementations[name]['cv_percent']:.2f}" for name in implementation_names]
+                lines.append("| " + " | ".join(cells) + " |")
+        lines += ["", "</details>", ""]
     return "\n".join(lines) + "\n"
 
 

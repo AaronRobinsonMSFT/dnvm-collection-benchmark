@@ -1,4 +1,5 @@
 #include <exception>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -12,6 +13,8 @@ void print_cases(const char* implementation, bool& first)
 {
     for (const char* scenario : dnvm::MemoryScenarios)
     {
+        if (!Map::supports_replace && std::string(scenario) == "replace")
+            continue;
         for (std::uint32_t size : dnvm::MemorySizes)
         {
             const dnvm::MemoryMeasurement result = dnvm::measure_memory<Map>(scenario, size);
@@ -19,7 +22,8 @@ void print_cases(const char* implementation, bool& first)
                 std::cout << ",\n";
             first = false;
             std::cout << "{\"name\":\"" << implementation << "/" << scenario << "/" << size
-                << "\",\"object_bytes\":" << result.object_bytes
+                << "\",\"includes_destruction\":" << (result.includes_destruction ? "true" : "false")
+                << ",\"object_bytes\":" << result.object_bytes
                 << ",\"before_heap_bytes\":" << result.before_heap_bytes
                 << ",\"after_heap_bytes\":" << result.after_heap_bytes
                 << ",\"after_destroy_heap_bytes\":" << result.after_destroy_heap_bytes
@@ -34,18 +38,19 @@ void print_cases(const char* implementation, bool& first)
 }
 
 template <typename Map>
-void print_lifecycles(const char* implementation, bool& first)
+void print_lifecycles(const char* collection, const char* implementation, bool& first)
 {
-    for (bool reserved : {false, true})
+    for (const auto& mode : dnvm::LifecycleModes)
     {
         for (std::uint32_t size : dnvm::MemorySizes)
         {
-            const dnvm::LifecycleMeasurement result = dnvm::measure_lifecycle<Map>(reserved, size);
+            const dnvm::LifecycleMeasurement result = dnvm::measure_lifecycle<Map>(mode.reserved, size);
             if (!first)
                 std::cout << ",\n";
             first = false;
-            std::cout << "{\"implementation\":\"" << implementation
-                << "\",\"mode\":\"" << (reserved ? "reserved" : "growing")
+            std::cout << "{\"collection\":\"" << collection
+                << "\",\"implementation\":\"" << implementation
+                << "\",\"mode\":\"" << mode.name
                 << "\",\"size\":" << size << ",\"object_bytes\":" << result.object_bytes
                 << ",\"empty_heap_bytes\":" << result.empty_heap_bytes
                 << ",\"populated_heap_bytes\":" << result.populated_heap_bytes
@@ -65,7 +70,7 @@ int main(int argc, char**)
     }
     try
     {
-        std::cout << "{\"schema_version\":1,\"context\":{"
+        std::cout << "{\"schema_version\":2,\"context\":{"
             << "\"compiler\":\"" << DNVM_COMPILER
             << "\",\"build_type\":\"" << DNVM_BUILD_TYPE
             << "\",\"system\":\"" << DNVM_SYSTEM
@@ -84,16 +89,35 @@ int main(int argc, char**)
 #elif defined(_MSVC_STL_VERSION)
             << "\",\"stdlib\":\"MSVC STL " << _MSVC_STL_VERSION
 #endif
-            << "\"},\"cases\":[\n";
+            << "\"";
+        dnvm::describe_maps([](const std::string& name, const char* description) {
+            std::cout << "," << std::quoted(name) << ":" << std::quoted(description);
+        });
+        std::cout << "},\"lifecycle_modes\":[";
         bool first = true;
-        print_cases<dnvm::CountedRuntimeMap>("runtime", first);
-        print_cases<dnvm::CountedStdMap>("std", first);
-        print_cases<dnvm::CountedAbseilMap>("abseil", first);
+        for (const auto& mode : dnvm::LifecycleModes)
+        {
+            if (!first)
+                std::cout << ",";
+            first = false;
+            std::cout << std::quoted(mode.name);
+        }
+        std::cout << "],\"cases\":[\n";
+        first = true;
+        dnvm::for_each_family([&first](const char* name, auto family, const char*) {
+            using Maps = dnvm::CountedMaps<decltype(family)>;
+            print_cases<typename Maps::RuntimeMap>((std::string(name) + "/runtime").c_str(), first);
+            print_cases<typename Maps::StdMap>((std::string(name) + "/std").c_str(), first);
+            print_cases<typename Maps::AbseilMap>((std::string(name) + "/abseil").c_str(), first);
+        });
         std::cout << "],\"lifecycles\":[\n";
         first = true;
-        print_lifecycles<dnvm::CountedRuntimeMap>("runtime", first);
-        print_lifecycles<dnvm::CountedStdMap>("std", first);
-        print_lifecycles<dnvm::CountedAbseilMap>("abseil", first);
+        dnvm::for_each_family([&first](const char* name, auto family, const char*) {
+            using Maps = dnvm::CountedMaps<decltype(family)>;
+            print_lifecycles<typename Maps::RuntimeMap>(name, "runtime", first);
+            print_lifecycles<typename Maps::StdMap>(name, "std", first);
+            print_lifecycles<typename Maps::AbseilMap>(name, "abseil", first);
+        });
         std::cout << "]}\n";
         return 0;
     }

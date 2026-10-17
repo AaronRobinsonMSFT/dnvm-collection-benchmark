@@ -36,12 +36,18 @@ add_subdirectory(external/abseil-cpp EXCLUDE_FROM_ALL)
 add_subdirectory(external/benchmark EXCLUDE_FROM_ALL)
 
 set(CONTAINERS "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/native/containers")
+set(SIZEOF_VOID_P "${CMAKE_SIZEOF_VOID_P}")
+configure_file("${CONTAINERS}/dn-config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/dn-config.h")
 add_library(runtime_map STATIC
     "${CONTAINERS}/dn-simdhash.c"
     "${CONTAINERS}/dn-simdhash-u32-ptr.c"
+    "${CONTAINERS}/dn-simdhash-ptr-ptr.c"
+    "${CONTAINERS}/dn-simdhash-ptrpair-ptr.c"
+    "${CONTAINERS}/dn-simdhash-string-ptr.c"
     "${CONTAINERS}/dn-simdhash-utils.c"
     src/runtime_platform.c)
 target_include_directories(runtime_map PUBLIC "${CONTAINERS}" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(runtime_map PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 if(MSVC)
     target_compile_options(runtime_map PRIVATE /std:c11)
     # Keep the object that supplies the default assertion handler's linker alias.

@@ -13,12 +13,15 @@ SPEC = importlib.util.spec_from_file_location(
 REPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPORT)
 
+IMPLEMENTATIONS = ("runtime", "std", "abseil")
+COLLECTIONS = ("numbers", "addresses", "pairs", "text")
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.metadata = {
             "repetitions": 3,
-            "expected_benchmarks": [name + "/lookup_hit/8" for name in REPORT.IMPLEMENTATIONS],
+            "expected_benchmarks": [name + "/lookup_hit/8" for name in IMPLEMENTATIONS],
             "dependencies": {"runtime": {"commit": "abc", "dirty": False}},
             "min_time": 0.1,
             "known_duplicate_defect_reproduced": False,
@@ -30,6 +33,8 @@ class ReportTests(unittest.TestCase):
                 "compiler": "test", "stdlib": "test", "system": "Darwin",
                 "architecture": "arm64", "pointer_bits": "64",
                 "dataset_seed": "123", "abseil_revision": "def", "benchmark_revision": "ghi",
+                "baseline": "runtime",
+                "warning.fixture": "Known functional defect: illustrative artifact warning.",
             },
             "benchmarks": [],
         }
@@ -44,7 +49,7 @@ class ReportTests(unittest.TestCase):
     def test_normalization_and_ratio_direction(self):
         rows = REPORT.summarize(self.document, self.metadata)
         self.assertEqual([row["median_ns_per_key"] for row in rows], [10, 20, 5])
-        self.assertEqual([row["speedup_vs_runtime"] for row in rows], [1, 0.5, 2])
+        self.assertEqual([row["speedup_vs_baseline"] for row in rows], [1, 0.5, 2])
 
     def test_rejects_incomplete_invalid_or_failed_samples(self):
         cases = []
@@ -64,15 +69,16 @@ class ReportTests(unittest.TestCase):
             with self.subTest(document=document), self.assertRaises(ValueError):
                 REPORT.summarize(document, self.metadata)
 
-    def test_rejects_incomplete_comparison(self):
+    def test_inventory_can_declare_a_different_number_of_implementations(self):
         self.metadata["expected_benchmarks"] = self.metadata["expected_benchmarks"][:-1]
         self.document["benchmarks"] = self.document["benchmarks"][:-3]
-        with self.assertRaisesRegex(ValueError, "Missing comparison"):
-            REPORT.summarize(self.document, self.metadata)
+        rows = REPORT.summarize(self.document, self.metadata)
+        self.assertEqual([row["implementation"] for row in rows], ["runtime", "std"])
+        self.assertEqual([row["speedup_vs_baseline"] for row in rows], [1, 0.5])
 
     def test_rejects_unrepresentative_or_mismatched_build(self):
         for key, value in (("build_type", "Debug"), ("sanitizers", "1"),
-                           ("runtime_simd", "scalar"), ("runtime_revision", "wrong")):
+                           ("runtime_revision", "wrong")):
             document = copy.deepcopy(self.document)
             document["context"][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -121,13 +127,13 @@ class ReportTests(unittest.TestCase):
                                          ("abseil", 20, 0)):
             rows.append({
                 "scenario": "lookup_hit", "size": 64, "implementation": implementation,
-                "median_ns_per_key": time, "speedup_vs_runtime": 10 / time,
+                "median_ns_per_key": time, "speedup_vs_baseline": 10 / time,
                 "cv_percent": cv,
             })
         for row in rows[:3]:
             rows.append({**row, "scenario": "iterate"})
         text = REPORT.markdown(list(reversed(rows)), self.document["context"], self.metadata)
-        self.assertEqual(text.count("| Keys | Runtime ns/key |"), 2)
+        self.assertEqual(text.count("| Keys | runtime ns/key |"), 2)
         self.assertLess(text.index("## iterate\n"), text.index("## lookup_hit\n"))
         lookup = text.split("## lookup_hit\n")[1].split("<details>")[0]
         small = "| 8 | 10.000 | 20.000 (0.50x) | **5.000** (2.00x) |"
@@ -143,27 +149,127 @@ class ReportTests(unittest.TestCase):
         })
         rows = REPORT.summarize(self.document, self.metadata)
         text = REPORT.markdown(rows, self.document["context"], self.metadata)
-        self.assertIn("**Functional correctness:** not run during data collection.", text)
-        self.assertIn("separate Linux GCC and Clang validation", text)
-        self.assertIn("**Known functional defect:** duplicate keys can be inserted after deletion.", text)
-        self.assertIn("reproducer was not run during data collection", text)
-        self.assertNotIn("reproducer failed", text)
-        self.assertNotIn("Passing baseline tests", text)
+        self.assertIn("| functional_tests | not_run |", text)
+        self.assertIn("illustrative artifact warning", text)
+        self.assertNotIn("Linux", text)
+        self.assertNotIn("duplicate keys", text)
+
+    def expand_collections(self):
+        samples = self.document["benchmarks"]
+        expected = self.metadata["expected_benchmarks"]
+        self.document["context"]["collections"] = ",".join(COLLECTIONS)
+        self.document["context"].update({
+            "collection." + name: "Artifact description for " + name for name in COLLECTIONS
+        })
+        self.document["benchmarks"] = [
+            {**row, "name": collection + "/" + row["name"],
+             "cpu_time": row["cpu_time"] * multiplier}
+            for multiplier, collection in enumerate(COLLECTIONS, 1)
+            for row in samples
+        ]
+        self.metadata["expected_benchmarks"] = [
+            collection + "/" + name for collection in COLLECTIONS for name in expected
+        ]
+
+    def test_groups_key_families_without_mixing_cpu_or_memory(self):
+        self.expand_collections()
+        rows = REPORT.summarize(self.document, self.metadata)
+        self.assertEqual(len(rows), 12)
+        for multiplier, collection in enumerate(COLLECTIONS, 1):
+            group = [row for row in rows if row["collection"] == collection]
+            self.assertEqual([row["median_ns_per_key"] for row in group],
+                             [10 * multiplier, 20 * multiplier, 5 * multiplier])
+            self.assertEqual([row["speedup_vs_baseline"] for row in group], [1, 0.5, 2])
+        document = self.memory_document()
+        for row in document["cases"]:
+            row["object_bytes"] = 8 * (1 + list(COLLECTIONS).index(
+                REPORT.split_name(row["name"])[0]))
+        for row in document["lifecycles"]:
+            row["object_bytes"] = 8 * (1 + list(COLLECTIONS).index(row["collection"]))
+        memory = REPORT.validate_memory(
+            document, self.document["context"], self.metadata["expected_benchmarks"])
+        self.assertEqual(len(memory["lifecycles"]), 24)
+        text = REPORT.markdown(rows, self.document["context"], self.metadata, memory)
+        for collection in COLLECTIONS:
+            self.assertIn(f"## {collection}\n", text)
+            self.assertIn("Artifact description for " + collection, text)
+        self.assertEqual(text.count("### lookup_hit\n"), 4)
+        self.assertEqual(text.count("#### Memory accounting\n"), 4)
+        document["context"]["collections"] = "u32"
+        with self.assertRaisesRegex(ValueError, "configuration mismatch: collections"):
+            REPORT.validate_memory(
+                document, self.document["context"], self.metadata["expected_benchmarks"])
+        document["context"] = self.document["context"].copy()
+        document["lifecycles"].pop()
+        with self.assertRaisesRegex(ValueError, "Missing memory lifecycles"):
+            REPORT.validate_memory(
+                document, self.document["context"], self.metadata["expected_benchmarks"])
+
+    def test_accepts_unknown_workloads_and_rejects_only_malformed_names(self):
+        self.assertEqual(REPORT.split_name("future/fourth/compact/128"),
+                         ("future", "fourth", "compact", 128))
+        for name in ("too/few", "one/two/three/four/8", "family//scenario/8", "a/b/c/0"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                REPORT.split_name(name)
+
+    def test_nonstandard_implementations_baseline_and_lifecycle_modes(self):
+        names = {"runtime": "reference", "std": "alternative", "abseil": "candidate"}
+        self.metadata["expected_benchmarks"] = [
+            "future/" + names[name.split("/")[0]] + "/compact/8"
+            for name in self.metadata["expected_benchmarks"]
+        ]
+        for row in self.document["benchmarks"]:
+            row["name"] = "future/" + names[row["name"].split("/")[0]] + "/compact/8"
+        self.document["context"]["baseline"] = "candidate"
+        rows = REPORT.summarize(self.document, self.metadata)
+        self.assertEqual([row["speedup_vs_baseline"] for row in rows], [0.5, 0.25, 1])
+        document = self.memory_document()
+        document["lifecycle_modes"] = ["retained", "preallocated"]
+        for row in document["lifecycles"]:
+            row["mode"] = {"growing": "retained", "reserved": "preallocated"}[row["mode"]]
+        memory = REPORT.validate_memory(
+            document, self.document["context"], self.metadata["expected_benchmarks"])
+        text = REPORT.markdown(rows, self.document["context"], self.metadata, memory)
+        self.assertIn("Baseline: `candidate`.", text)
+        self.assertIn("reference ns/key (speedup)", text)
+        self.assertIn("### retained", text)
+        self.assertIn("### preallocated", text)
+        self.document["context"]["baseline"] = "absent"
+        with self.assertRaisesRegex(ValueError, "Missing comparison baseline"):
+            REPORT.summarize(self.document, self.metadata)
+
+    def test_original_memory_artifacts_remain_readable(self):
+        document = self.memory_document()
+        document["schema_version"] = 1
+        document.pop("lifecycle_modes")
+        for row in document["cases"]:
+            row.pop("includes_destruction")
+        for row in document["lifecycles"]:
+            row.pop("collection")
+        memory = REPORT.validate_memory(
+            document, self.document["context"], self.metadata["expected_benchmarks"])
+        self.assertEqual(len(memory["cases"]), 3)
+        self.assertEqual(len(memory["lifecycles"]), 6)
 
     def memory_document(self):
         return {
-            "schema_version": 1, "context": copy.deepcopy(self.document["context"]),
+            "schema_version": 2, "context": copy.deepcopy(self.document["context"]),
+            "lifecycle_modes": ["growing", "reserved"],
             "cases": [{
                 "name": name, "object_bytes": 8, "before_heap_bytes": 64,
+                "includes_destruction": False,
                 "after_heap_bytes": 64, "after_destroy_heap_bytes": 0,
                 "allocations": 0, "deallocations": 0, "allocated_bytes": 0,
                 "freed_bytes": 0, "end_heap_bytes": 64, "peak_heap_bytes": 64,
             } for name in self.metadata["expected_benchmarks"]],
             "lifecycles": [{
+                "collection": collection,
                 "implementation": name, "mode": mode, "size": 8, "object_bytes": 8,
                 "empty_heap_bytes": 0, "populated_heap_bytes": 64,
                 "cleared_heap_bytes": 32, "destroyed_heap_bytes": 0,
-            } for name in REPORT.IMPLEMENTATIONS for mode in ("growing", "reserved")],
+            } for collection, implementations in REPORT.comparison_inventory(
+                self.metadata["expected_benchmarks"]).items()
+              for name in implementations for mode in ("growing", "reserved")],
         }
 
     def test_memory_footprint_is_adjacent_and_cpu_numbers_are_unchanged(self):
@@ -240,6 +346,7 @@ class ReportTests(unittest.TestCase):
         for row in document["cases"]:
             row.update({
                 "name": row["name"].replace("lookup_hit", "build_growing"),
+                "includes_destruction": True,
                 "before_heap_bytes": 0, "allocated_bytes": 80, "freed_bytes": 80,
                 "end_heap_bytes": 0, "peak_heap_bytes": 80,
                 "allocations": 3, "deallocations": 3,
@@ -249,7 +356,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result["footprint_bytes"], 72)
         self.assertEqual(result["peak_footprint_bytes"], 88)
         document["cases"][0]["deallocations"] = 2
-        with self.assertRaisesRegex(ValueError, "build memory boundary"):
+        with self.assertRaisesRegex(ValueError, "lifecycle memory boundary"):
             REPORT.validate_memory(document, self.document["context"], expected)
 
 

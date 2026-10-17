@@ -17,17 +17,34 @@ CI = importlib.util.module_from_spec(SPEC)
 with mock.patch.dict(sys.modules, {"report": test_report.REPORT}):
     SPEC.loader.exec_module(CI)
 
+PLATFORMS = {
+    "linux-gcc-x64": ("Linux", "GNU", "64", "x86_64", "sse2"),
+    "linux-clang-x64": ("Linux", "Clang", "64", "x86_64", "sse2"),
+    "macos-arm64": ("Darwin", "AppleClang", "64", "arm64", "neon"),
+    "windows-x64": ("Windows", "MSVC", "64", "x64", "sse2"),
+    "windows-x86": ("Windows", "MSVC", "32", "x86", "sse2"),
+}
+VALIDATION_RUNS = ("linux-gcc-x64", "linux-clang-x64")
+
 
 class CombinedReportTests(unittest.TestCase):
     commit = "f" * 40
 
-    def populate(self, directory):
-        for name, (system, compiler, bits, architectures, simd) in CI.PLATFORMS.items():
+    def populate(self, directory, multiple_collections=False, platforms=None):
+        platforms = PLATFORMS if platforms is None else platforms
+        for name, (system, compiler, bits, architecture, simd) in platforms.items():
+            (directory / ("run-" + name + ".json")).write_text(json.dumps({
+                "schema_version": 1, "name": name, "commit": self.commit,
+                "expected_runs": len(platforms), "measurements": "results-" + name,
+                "validation": "validation-" + name if name in VALIDATION_RUNS else None,
+            }))
             fixture = test_report.ReportTests("test_normalization_and_ratio_direction")
             fixture.setUp()
+            if multiple_collections:
+                fixture.expand_collections()
             fixture.document["context"].update({
                 "system": system, "compiler": compiler + " 1.0",
-                "pointer_bits": bits, "architecture": architectures[0], "runtime_simd": simd,
+                "pointer_bits": bits, "architecture": architecture, "runtime_simd": simd,
             })
             fixture.metadata.update({
                 "project_commit": self.commit, "project_status": "",
@@ -57,14 +74,16 @@ class CombinedReportTests(unittest.TestCase):
             cache = "CMAKE_C_FLAGS:STRING=\nCMAKE_CXX_FLAGS:STRING=-O3\n"
             for filename in ("CMakeCache.txt", "memory-CMakeCache.txt"):
                 (platform / filename).write_text(cache)
-        for name in CI.VALIDATION_PLATFORMS:
+        for name in VALIDATION_RUNS:
+            if name not in platforms:
+                continue
             validation = directory / ("validation-" + name)
             validation.mkdir()
             (validation / "commit.txt").write_text(self.commit)
             (validation / "functional-tests.xml").write_text(
-                '<testsuite><testcase name="map_contract"/>'
-                '<testcase name="memory_accounting"/>'
-                '<testcase name="report_contract"/></testsuite>'
+                '<testsuite tests="3"><testcase name="contract-a"/>'
+                '<testcase name="contract-b"/>'
+                '<testcase name="contract-c"/></testsuite>'
             )
 
     def test_combines_all_platforms_without_pooling_measurements(self):
@@ -81,7 +100,7 @@ class CombinedReportTests(unittest.TestCase):
             text = (directory / "summary.md").read_text()
             self.assertIn("windows-x86 | complete | 3 | 3", text)
             self.assertIn("not across machines", text)
-            for name in CI.PLATFORMS:
+            for name in PLATFORMS:
                 self.assertIn(f"<summary>{name}</summary>", text)
 
     def test_reports_partial_results_and_platform_or_commit_mismatches(self):
@@ -121,13 +140,30 @@ class CombinedReportTests(unittest.TestCase):
                 self.assertIn("windows-x86", result["errors"][0])
                 self.assertIn("windows-x86 | missing or invalid", (directory / "summary.md").read_text())
 
+    def test_combines_all_key_families_and_keeps_their_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory, multiple_collections=True)
+            result = CI.combine(directory, self.commit)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["platforms"]), 5)
+            for platform in result["platforms"]:
+                self.assertEqual(len(platform["cpu"]), 12)
+                self.assertEqual(len(platform["memory"]["cases"]), 12)
+                self.assertEqual(len(platform["memory"]["lifecycles"]), 24)
+                self.assertEqual({row["collection"] for row in platform["cpu"]},
+                                 set(test_report.COLLECTIONS))
+            self.assertEqual(len((directory / "summary.csv").read_text().splitlines()), 61)
+            self.assertEqual(len((directory / "memory-summary.csv").read_text().splitlines()), 61)
+            self.assertEqual(len((directory / "memory-lifecycle.csv").read_text().splitlines()), 121)
+
     def test_functional_failure_or_missing_group_cannot_report_success(self):
         for content in (
-            '<testsuite><testcase name="map_contract"><failure/></testcase>'
+            '<testsuite tests="3"><testcase name="map_contract"><failure/></testcase>'
             '<testcase name="memory_accounting"/><testcase name="report_contract"/></testsuite>',
-            '<testsuite><testcase name="map_contract"><skipped/></testcase>'
+            '<testsuite tests="3"><testcase name="map_contract"><skipped/></testcase>'
             '<testcase name="memory_accounting"/><testcase name="report_contract"/></testsuite>',
-            '<testsuite><testcase name="map_contract"/></testsuite>',
+            '<testsuite tests="3"><testcase name="map_contract"/></testsuite>',
         ):
             with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
@@ -144,13 +180,68 @@ class CombinedReportTests(unittest.TestCase):
             directory = Path(temporary)
             self.populate(directory)
             CI.combine(directory, self.commit)
-            for name in CI.PLATFORMS:
+            for name in PLATFORMS:
                 (directory / ("results-" + name) / "memory.json").unlink()
             result = CI.combine(directory, self.commit)
             self.assertEqual(len(result["errors"]), 5)
             self.assertEqual(result["platforms"], [])
             for name in ("summary.csv", "memory-summary.csv", "memory-lifecycle.csv"):
                 self.assertFalse((directory / name).exists())
+
+    def test_discovers_unfamiliar_platforms_and_changed_test_inventories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory, platforms={
+                **PLATFORMS, "future-platform": ("FutureOS", "FutureCompiler", "128", "future", "future-simd"),
+            })
+            (directory / "validation-linux-gcc-x64" / "functional-tests.xml").write_text(
+                '<testsuite tests="1"><testcase name="completely-new-test"/></testsuite>'
+            )
+            result = CI.combine(directory, self.commit)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["platforms"]), 6)
+            self.assertEqual(result["functional"]["linux-gcc-x64"], "passed")
+            self.assertIn("future-platform | complete | 3 | 3", (directory / "summary.md").read_text())
+
+    def test_missing_run_descriptor_or_entire_artifact_cannot_report_success(self):
+        for filename in ("run-windows-x86.json", "results-windows-x86/benchmarks.json"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.populate(directory)
+                (directory / filename).unlink()
+                result = CI.combine(directory, self.commit)
+                self.assertEqual(len(result["errors"]), 1)
+                self.assertEqual(len(result["platforms"]), 4)
+
+    def test_validation_uses_junit_suite_counts_and_qualified_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory)
+            path = directory / "validation-linux-gcc-x64" / "functional-tests.xml"
+            path.write_text(
+                '<testsuites><testsuite name="first" tests="1"><testcase name="same"/></testsuite>'
+                '<testsuite name="second" tests="1"><testcase name="same"/></testsuite></testsuites>'
+            )
+            self.assertEqual(CI.combine(directory, self.commit)["errors"], [])
+            path.write_text(
+                '<testsuites><testsuite name="first" tests="2"><testcase name="one"/></testsuite>'
+                '<testsuite name="second" tests="0"><testcase name="two"/></testsuite></testsuites>'
+            )
+            self.assertEqual(CI.combine(directory, self.commit)["functional"]["linux-gcc-x64"], "failed")
+
+    def test_invalid_inventory_cannot_reference_other_directories_or_commits(self):
+        for changes in ({"measurements": "../outside"}, {"measurements": "/outside"},
+                        {"commit": "wrong"}, {"name": "linux-gcc-x64"},
+                        {"measurements": "results-linux-gcc-x64"}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.populate(directory)
+                path = directory / "run-windows-x86.json"
+                descriptor = json.loads(path.read_text())
+                descriptor.update(changes)
+                path.write_text(json.dumps(descriptor))
+                result = CI.combine(directory, self.commit)
+                self.assertTrue(result["errors"])
 
 
 if __name__ == "__main__":

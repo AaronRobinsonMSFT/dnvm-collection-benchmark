@@ -68,7 +68,6 @@ def main():
         "min_time": args.min_time,
         "expected_benchmarks": expected,
         "functional_tests": "not_run",
-        "known_duplicate_defect_reproduced": None,
     }
     command = [
         str(benchmark),

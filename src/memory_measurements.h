@@ -1,7 +1,6 @@
 #ifndef DNVM_MEMORY_MEASUREMENTS_H
 #define DNVM_MEMORY_MEASUREMENTS_H
 
-#include <numeric>
 #include <string>
 
 #include "dataset.h"
@@ -14,6 +13,12 @@ inline constexpr const char* MemoryScenarios[] = {
     "replace", "erase_insert", "iterate", "clear_refill"
 };
 inline constexpr std::uint32_t MemorySizes[] = {8, 64, 1024, 65536};
+struct LifecycleMode
+{
+    const char* name;
+    bool reserved;
+};
+inline constexpr LifecycleMode LifecycleModes[] = {{"growing", false}, {"reserved", true}};
 
 inline void memory_check(bool condition, const char* message)
 {
@@ -22,7 +27,7 @@ inline void memory_check(bool condition, const char* message)
 }
 
 template <typename Map>
-void memory_operation(Map& map, Dataset& data, const std::string& scenario)
+void memory_operation(Map& map, MapDataset<Map>& data, const std::string& scenario)
 {
     if (scenario == "build_growing" || scenario == "build_reserved")
     {
@@ -31,7 +36,7 @@ void memory_operation(Map& map, Dataset& data, const std::string& scenario)
     else if (scenario == "lookup_hit" || scenario == "lookup_miss")
     {
         const bool hit = scenario == "lookup_hit";
-        const auto& keys = hit ? data.hits : data.misses;
+        const auto& keys = hit ? data.hit_queries : data.misses;
         for (std::size_t i = 0; i < keys.size(); ++i)
         {
             void* value = nullptr;
@@ -41,20 +46,25 @@ void memory_operation(Map& map, Dataset& data, const std::string& scenario)
     }
     else if (scenario == "duplicate")
     {
-        for (std::uint32_t key : data.hits)
+        for (auto key : data.hit_queries)
             memory_check(!map.insert(key, nullptr), "Memory duplicate insertion was not rejected");
     }
     else if (scenario == "replace")
     {
-        for (std::size_t i = 0; i < data.hits.size(); ++i)
-            memory_check(map.replace(data.hits[i], &data.values[(i + 1) % data.values.size()]),
-                         "Memory replacement failed");
+        if constexpr (Map::supports_replace)
+        {
+            for (std::size_t i = 0; i < data.hits.size(); ++i)
+                memory_check(map.replace(data.hits[i], &data.values[(i + 1) % data.values.size()]),
+                             "Memory replacement failed");
+        }
+        else
+            throw std::invalid_argument("Replacement is not supported for string comparisons");
     }
     else if (scenario == "erase_insert")
     {
         for (std::size_t i = 0; i < data.hits.size(); ++i)
         {
-            memory_check(map.erase(data.hits[i]), "Memory removal failed");
+            memory_check(map.erase(data.hit_queries[i]), "Memory removal failed");
             memory_check(map.insert(data.hits[i], &data.values[i]), "Memory reinsertion failed");
         }
     }
@@ -62,11 +72,16 @@ void memory_operation(Map& map, Dataset& data, const std::string& scenario)
     {
         std::uint64_t count = 0;
         std::uint64_t sum = 0;
-        auto visitor = [&count, &sum](std::uint32_t key, void*) { ++count; sum += key; };
+        auto visitor = [&count, &sum](typename Map::key_type key, void*) {
+            ++count;
+            sum += key_checksum(key);
+        };
         map.visit(visitor);
+        std::uint64_t expected_sum = 0;
+        for (auto key : data.hits)
+            expected_sum += key_checksum(key);
         memory_check(count == data.hits.size(), "Memory traversal returned wrong count");
-        memory_check(sum == std::accumulate(data.hits.begin(), data.hits.end(), std::uint64_t{0}),
-                     "Memory traversal returned wrong keys");
+        memory_check(sum == expected_sum, "Memory traversal returned wrong keys");
     }
     else if (scenario == "clear_refill")
     {
@@ -82,13 +97,14 @@ void memory_operation(Map& map, Dataset& data, const std::string& scenario)
     {
         void* value = nullptr;
         const std::size_t index = scenario == "replace" ? (i + 1) % data.values.size() : i;
-        memory_check(map.find(data.hits[i], value) && value == &data.values[index],
+        memory_check(map.find(data.hit_queries[i], value) && value == &data.values[index],
                      "Memory operation did not preserve expected entries");
     }
 }
 
 struct MemoryMeasurement
 {
+    bool includes_destruction;
     std::uint64_t object_bytes;
     std::uint64_t before_heap_bytes;
     std::uint64_t after_heap_bytes;
@@ -99,12 +115,13 @@ struct MemoryMeasurement
 template <typename Map>
 MemoryMeasurement measure_memory(const std::string& scenario, std::uint32_t size)
 {
-    Dataset data(size);
+    MapDataset<Map> data(size);
     MemoryAccount account;
     MemoryScope scope(account);
     MemoryMeasurement result{};
     result.object_bytes = sizeof(Map);
     const bool build = scenario == "build_growing" || scenario == "build_reserved";
+    result.includes_destruction = build;
     {
         Map map(scenario == "build_reserved" ? size : 0);
         if (!build)
@@ -136,7 +153,7 @@ struct LifecycleMeasurement
 template <typename Map>
 LifecycleMeasurement measure_lifecycle(bool reserved, std::uint32_t size)
 {
-    Dataset data(size);
+    MapDataset<Map> data(size);
     MemoryAccount account;
     MemoryScope scope(account);
     LifecycleMeasurement result{};
@@ -148,7 +165,7 @@ LifecycleMeasurement measure_lifecycle(bool reserved, std::uint32_t size)
         result.populated_heap_bytes = account.stats().live_bytes;
         map.clear();
         memory_check(map.size() == 0, "Memory lifecycle clear did not empty collection");
-        for (std::uint32_t key : data.hits)
+        for (auto key : data.hit_queries)
         {
             void* value = nullptr;
             memory_check(!map.find(key, value), "Memory lifecycle found an entry after clear");

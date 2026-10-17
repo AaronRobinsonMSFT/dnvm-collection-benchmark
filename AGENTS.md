@@ -25,6 +25,8 @@ macOS arm64, and Linux GCC/Clang. Collect CPU and memory results.
   `python3 -m unittest discover -s tests -p 'test_*.py'`.
 - Keep raw results and provenance. Compare implementations within each run,
   not across different machines.
+- Producers own workload descriptions and inventories; reporters consume schemas,
+  not collection names or test definitions.
 - Use the `Collections` workflow to verify platform changes. Report actual
   outcomes; do not describe unrun jobs as passing.
 
