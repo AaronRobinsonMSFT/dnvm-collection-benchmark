@@ -30,7 +30,7 @@ License notices remain in all submodules.
 After cloning this repository, initialize its pinned dependencies:
 
 ```sh
-git submodule update --init --depth 1
+git -c core.longpaths=true submodule update --init --depth 1
 ```
 
 Add the options for your platform to the configure command:
@@ -73,11 +73,12 @@ python3 scripts/report.py results/local
 
 ## Functional validation (Linux only)
 
-Run once with GCC and once with Clang. Data collection does not run these tests.
+Run once with GCC and once with Clang, with sanitizers on Clang.
+Data collection does not run these tests.
 
 ```sh
 CC=gcc CXX=g++ cmake -S . -B build/test-gcc -DCMAKE_BUILD_TYPE=Debug \
-    -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON
+    -DBUILD_TESTING=ON -DDNVM_SANITIZERS=OFF
 cmake --build build/test-gcc --parallel 8 --target map_tests map_memory
 ctest --test-dir build/test-gcc --output-on-failure --no-tests=error
 
