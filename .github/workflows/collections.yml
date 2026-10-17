@@ -1,0 +1,121 @@
+name: Collections
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc-x64
+            runner: ubuntu-24.04
+            configure: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+            functional: true
+          - name: linux-clang-x64
+            runner: ubuntu-24.04
+            configure: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+            functional: true
+          - name: macos-arm64
+            runner: macos-15
+            configure: -DCMAKE_OSX_ARCHITECTURES=arm64
+            functional: false
+          - name: windows-x64
+            runner: windows-2022
+            configure: -G "Visual Studio 17 2022" -A x64
+            functional: false
+          - name: windows-x86
+            runner: windows-2022
+            configure: -G "Visual Studio 17 2022" -A Win32
+            functional: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize dependencies
+        run: git submodule update --init --depth 1 --jobs 3
+      - name: Functional validation
+        if: matrix.functional
+        run: |
+          cmake -S . -B build/tests -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON ${{ matrix.configure }}
+          cmake --build build/tests --parallel 4 --target map_tests map_memory
+          printf '%s\n' "$GITHUB_SHA" > build/tests/commit.txt
+          ctest --test-dir build/tests --output-on-failure --no-tests=error \
+            --output-junit "$PWD/build/tests/functional-tests.xml"
+      - name: Build collection targets
+        run: |
+          cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF ${{ matrix.configure }}
+          cmake --build build/release --config Release --parallel 4
+      - name: Collect CPU and memory results
+        run: python scripts/run.py --build build/release --output results/${{ matrix.name }}
+      - name: Publish platform summary
+        run: cat results/${{ matrix.name }}/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload functional results
+        if: always() && matrix.functional
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-${{ matrix.name }}
+          path: |
+            build/tests/commit.txt
+            build/tests/functional-tests.xml
+            build/tests/Testing/Temporary/LastTest.log
+          overwrite: true
+          retention-days: 14
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-${{ matrix.name }}
+          path: results/${{ matrix.name }}
+          overwrite: true
+          retention-days: 14
+
+  report:
+    name: Combined report
+    needs: collect
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download measurements
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: results-*
+          path: build/artifacts
+      - name: Download functional results
+        if: always()
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: validation-*
+          path: build/artifacts
+      - name: Generate combined report
+        if: always()
+        env:
+          COLLECTION_STATUS: ${{ needs.collect.result }}
+        run: |
+          python scripts/ci_report.py build/artifacts --commit "$GITHUB_SHA" \
+            --collection-status "$COLLECTION_STATUS"
+      - name: Upload combined results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: collection-results
+          path: build/artifacts
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14

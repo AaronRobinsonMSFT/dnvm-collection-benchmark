@@ -69,12 +69,18 @@ foreach(dependency runtime abseil-cpp benchmark)
         target_compile_definitions(${target} PRIVATE "DNVM_${dependency}_REVISION=\"${revision}\"")
     endforeach()
 endforeach()
+set(DNVM_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "Win32")
+    set(DNVM_TARGET_ARCH x86)
+elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
+    set(DNVM_TARGET_ARCH x64)
+endif()
 foreach(target map_benchmarks map_memory)
     target_compile_definitions(${target} PRIVATE
         DNVM_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
         DNVM_BUILD_TYPE="$<CONFIG>"
         DNVM_SYSTEM="${CMAKE_SYSTEM_NAME}"
-        DNVM_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
+        DNVM_ARCH="${DNVM_TARGET_ARCH}"
         DNVM_SANITIZERS="$<BOOL:${DNVM_SANITIZERS}>")
 endforeach()
 
