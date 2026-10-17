@@ -15,8 +15,8 @@ namespace dnvm
 class RuntimeMap
 {
 public:
-    explicit RuntimeMap(std::uint32_t capacity = 0)
-        : map_(dn_simdhash_u32_ptr_new(capacity, nullptr))
+    explicit RuntimeMap(std::uint32_t capacity = 0, dn_allocator_t* allocator = nullptr)
+        : map_(dn_simdhash_u32_ptr_new(capacity, allocator))
     {
         if (map_ == nullptr)
             throw std::bad_alloc();

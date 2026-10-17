@@ -54,6 +54,8 @@ target_link_libraries(map_adapters INTERFACE runtime_map absl::flat_hash_map)
 
 add_executable(map_benchmarks benchmarks/map_benchmarks.cpp)
 target_link_libraries(map_benchmarks PRIVATE map_adapters benchmark::benchmark)
+add_executable(map_memory benchmarks/map_memory.cpp)
+target_link_libraries(map_memory PRIVATE map_adapters)
 find_package(Git REQUIRED)
 foreach(dependency runtime abseil-cpp benchmark)
     execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
@@ -63,20 +65,25 @@ foreach(dependency runtime abseil-cpp benchmark)
     if(dependency STREQUAL "abseil-cpp")
         set(dependency abseil)
     endif()
-    target_compile_definitions(map_benchmarks PRIVATE "DNVM_${dependency}_REVISION=\"${revision}\"")
+    foreach(target map_benchmarks map_memory)
+        target_compile_definitions(${target} PRIVATE "DNVM_${dependency}_REVISION=\"${revision}\"")
+    endforeach()
 endforeach()
-target_compile_definitions(map_benchmarks PRIVATE
-    DNVM_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
-    DNVM_BUILD_TYPE="$<CONFIG>"
-    DNVM_SYSTEM="${CMAKE_SYSTEM_NAME}"
-    DNVM_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
-    DNVM_SANITIZERS="$<BOOL:${DNVM_SANITIZERS}>")
+foreach(target map_benchmarks map_memory)
+    target_compile_definitions(${target} PRIVATE
+        DNVM_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"
+        DNVM_BUILD_TYPE="$<CONFIG>"
+        DNVM_SYSTEM="${CMAKE_SYSTEM_NAME}"
+        DNVM_ARCH="${CMAKE_SYSTEM_PROCESSOR}"
+        DNVM_SANITIZERS="$<BOOL:${DNVM_SANITIZERS}>")
+endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
     add_executable(map_tests tests/map_tests.cpp)
     target_link_libraries(map_tests PRIVATE map_adapters)
     add_test(NAME map_contract COMMAND map_tests)
+    add_test(NAME memory_accounting COMMAND map_memory)
     find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
     add_test(NAME report_contract COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*.py")

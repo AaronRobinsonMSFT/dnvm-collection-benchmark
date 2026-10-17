@@ -43,37 +43,64 @@ Use the system CMake; there is no Python package or virtual-environment
 requirement. On Apple Silicon with Homebrew, ensure `/opt/homebrew/bin` is on
 `PATH` if `cmake` is not found.
 
-Configure and build from the repository root:
+Configure and build the data-collection targets from the repository root.
+Functional correctness runs separately, once with Linux GCC and once with Linux
+Clang; Windows and macOS only collect comparison data. No GitHub workflow is
+implemented yet.
 
 ```sh
-cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 cmake --build build/release --parallel 8
-ctest --test-dir build/release --output-on-failure
 python3 scripts/run.py --build build/release --output results/macos-arm64
 ```
 
-The runner executes CTest again before measuring. Use a new output directory for
-each run; existing results are never overwritten. Defaults are five randomly
+Neither measurement script runs CTest or the separate known-defect reproducer,
+and neither requires `map_tests`. Use a new output directory for each run;
+existing results are never overwritten. Defaults are five randomly
 interleaved repetitions and at least 0.1 CPU seconds per sample. Keep the machine
 otherwise idle; increasing `--min-time` and `--repetitions` can help characterize
 noise, not eliminate environmental differences.
 The runner explicitly selects the complete suite and retains raw samples, even
 if Google Benchmark environment variables request a filter or aggregate-only output.
+After CPU measurements, it runs the separate `map_memory` executable and merges
+memory accounting into the same summary page. Instrumented timings are never
+used or reported.
 
-For correctness validation with AddressSanitizer and UndefinedBehaviorSanitizer:
+To add memory accounting to existing CPU results without rerunning performance:
 
 ```sh
-cmake -S . -B build/sanitize -DCMAKE_BUILD_TYPE=Debug -DDNVM_SANITIZERS=ON
-cmake --build build/sanitize --parallel 8
-ctest --test-dir build/sanitize --output-on-failure
-build/sanitize/map_tests --reproduce-duplicate
+python3 scripts/run_memory.py --build build/release --results results/macos-arm64
 ```
 
+The memory command refuses to overwrite existing memory artifacts. Compiler,
+configuration, dependency revisions, dataset, and scenario coverage must match
+the CPU results. Hashes bind memory artifacts to the exact saved CPU inputs.
+
+## Functional validation (Linux only)
+
+Run the collection contract, memory-accounting, and reporting tests once per
+Linux compiler, independently of CPU and memory collection. Sanitizers belong to
+these validation builds, not measurement builds:
+
+```sh
+CC=gcc CXX=g++ cmake -S . -B build/test-gcc -DCMAKE_BUILD_TYPE=Debug \
+    -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON
+cmake --build build/test-gcc --parallel 8 --target map_tests map_memory
+ctest --test-dir build/test-gcc --output-on-failure --no-tests=error
+
+CC=clang CXX=clang++ cmake -S . -B build/test-clang -DCMAKE_BUILD_TYPE=Debug \
+    -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON
+cmake --build build/test-clang --parallel 8 --target map_tests map_memory
+ctest --test-dir build/test-clang --output-on-failure --no-tests=error
+```
+
+For a separate duplicate-key regression check, run `build/test-gcc/map_tests --reproduce-duplicate`
+(or the Clang equivalent).
 The separate reproducer returns **1 when it detects the duplicate-after-deletion contract
 violation**, 0 when it no longer reproduces, and 2 for an unrelated test failure.
-It is deliberately not counted as a passing correctness test. The runner records
-its outcome and carries a warning into the report. Do not use sanitized timings
-for performance comparisons.
+It is deliberately not counted as a passing correctness test. Data-collection
+reports mark functional tests and the reproducer as not run, retaining a warning
+about the known defect. Do not use sanitized timings for performance comparisons.
 
 ## How it works
 
@@ -92,10 +119,15 @@ for performance comparisons.
    generates deterministic distinct keys, disjoint misses, and real borrowed
    pointers. Dataset generation and lookup-table construction are outside lookup
    timing.
-4. **Record and report:** `scripts/run.py` runs tests, records provenance and build
+   `benchmarks/map_memory.cpp` separately executes one checked batch of each
+   scenario with collection-specific allocation accounting, plus growing/reserved
+   lifecycle probes. It does not link Google Benchmark or collect timing.
+4. **Record and report:** `scripts/run.py` records provenance and build
    configuration, invokes Google Benchmark, and calls `scripts/report.py`.
    The reporter rejects missing or failed samples, incomplete comparisons, dirty
    dependencies, revision mismatches, and non-Release/sanitized measurements.
+   Workload-result and allocation-integrity checks remain part of data collection;
+   they are not a second run of the functional suite.
 
 Scenarios are `lookup_hit`, `lookup_miss`, `build_growing`, `build_reserved`,
 `duplicate`, `replace`, `erase_insert`, `iterate`, and `clear_refill`. The last two
@@ -107,15 +139,54 @@ runtime's callback boundary.
 
 The baseline uses each implementation's default hasher and allocation policy.
 It measures the collection as normally used, **not table layout in isolation**.
-There is no common-hasher experiment, allocation/RSS measurement, concurrent
+There is no common-hasher experiment, process-RSS measurement, concurrent
 benchmark, or precomputed-hash performance comparison yet.
 
-Each result directory contains raw `benchmarks.json`, `metadata.json`, test and
+## Memory-accounting boundaries
+
+The memory pass uses the original runtime allocator callbacks and stateless
+counting allocators for STL/Abseil. An explicit `MemoryScope` selects one account
+per thread; nested scopes and containers escaping that scope are unsupported.
+The tracking ledger uses the ordinary allocator and is not itself counted.
+Compile-time checks require counted and uninstrumented adapters to have identical
+inline object sizes. Accounting code is not included in the CPU executable.
+
+Footprint is inline object size plus live requested heap bytes. Runtime's heap
+control structure and buffers are counted; the native adapter's inline pointer
+handle is included too. Dataset buffers, borrowed pointees, tracking bookkeeping,
+allocator metadata/size-class rounding, and other process memory are excluded.
+This is requested storage, not RSS or an allocator's actual physical footprint.
+
+Each memory scenario executes one batch, not the CPU run's calibrated iteration
+count. Build scenarios include construction/reservation and destruction in
+allocation traffic; other scenarios begin after population and end before
+destruction. Footprint is sampled while the populated object is still alive.
+Peak footprint includes pre-existing storage and overlapping old/new allocations
+during growth. Separate lifecycle probes record empty, populated, cleared, and
+destroyed states. Every probe checks that all tracked collection allocations are released.
+
+## Reports
+
+Each result directory contains raw `benchmarks.json`, `metadata.json`,
 benchmark logs, CMake cache/compile commands, and `summary.md`, `summary.csv`, and
 `summary.json`. Summaries normalize CPU time per key, retain raw repetitions, and
 report median, coefficient of variation, and speedup relative to runtime.
+Markdown groups results by scenario, with one row per size and implementations
+side by side. It bolds the lowest median, marks CV above 5% with `[!]`, and keeps
+exact CV values in a collapsible details table. JSON and CSV retain their
+implementation-per-row format and full numeric precision.
+Each scenario's performance table is immediately followed by its footprint
+table when memory data is present. Expandable memory details show exact live/peak
+bytes and allocation traffic; lifecycle tables show retention after clear.
+Raw memory data and provenance are in `memory.json` and `memory-metadata.json`;
+derived values are in `memory-summary.json`, `memory-summary.csv`, and
+`memory-lifecycle.csv`. CPU JSON/CSV values are not changed by adding memory.
 Ratios are within one run only; results from different machines are not pooled.
 High variability is flagged, not turned into a performance gate.
+New collection metadata records `functional_tests: "not_run"` and
+`known_duplicate_defect_reproduced: null`; this does not claim correctness or
+absence of the documented defect. Historical results retain their original test
+logs and reproducer outcomes when reports are regenerated.
 Framework warnings (including unavailable CPU-frequency metadata or failed
 affinity setup) are retained in the report; CPU frequency is not used to convert
 the measured CPU time.

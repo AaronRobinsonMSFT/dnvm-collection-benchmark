@@ -1,4 +1,4 @@
-"""Run correctness checks, repeated benchmarks, and the local report."""
+"""Collect repeated CPU and memory measurements and write the local report."""
 
 import argparse
 import datetime
@@ -37,25 +37,11 @@ def main():
     executable_suffix = ".exe" if sys.platform == "win32" else ""
     binary_directory = build / "Release" if (build / "Release").is_dir() else build
     benchmark = binary_directory / ("map_benchmarks" + executable_suffix)
-    tests = binary_directory / ("map_tests" + executable_suffix)
-    if not benchmark.is_file() or not tests.is_file():
-        parser.error("Build map_benchmarks and map_tests first; see readme.md")
+    if not benchmark.is_file():
+        parser.error("Build map_benchmarks first; see readme.md")
     if output.exists():
         parser.error("Output already exists; choose a new directory to preserve previous results")
     output.mkdir(parents=True)
-    cmake_bin = shutil.which("cmake")
-    if cmake_bin is None:
-        parser.error("System cmake is required on PATH; see readme.md")
-    ctest = str(Path(cmake_bin).with_name("ctest" + executable_suffix))
-    with (output / "tests.log").open("w") as log:
-        subprocess.run([ctest, "--test-dir", str(build), "-C", "Release",
-                        "--output-on-failure", "--no-tests=error"],
-                       check=True, stdout=log, stderr=subprocess.STDOUT)
-    with (output / "duplicate-reproducer.log").open("w") as log:
-        duplicate = subprocess.run([str(tests), "--reproduce-duplicate"],
-                                   stdout=log, stderr=subprocess.STDOUT)
-    if duplicate.returncode not in (0, 1):
-        raise RuntimeError("Duplicate reproducer failed unexpectedly; inspect its log")
     expected = subprocess.check_output(
         [str(benchmark), "--benchmark_list_tests=true", "--benchmark_filter=."], text=True
     ).splitlines()
@@ -81,7 +67,8 @@ def main():
         "repetitions": args.repetitions,
         "min_time": args.min_time,
         "expected_benchmarks": expected,
-        "known_duplicate_defect_reproduced": duplicate.returncode == 1,
+        "functional_tests": "not_run",
+        "known_duplicate_defect_reproduced": None,
     }
     command = [
         str(benchmark),
@@ -108,9 +95,11 @@ def main():
     ]
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     rows = write_reports(output)
-    print(f"Completed {rows} comparison rows. Report: {output / 'summary.md'}")
-    if duplicate.returncode == 1:
-        print("Known runtime duplicate-key contract defect reproduced.")
+    print(f"Completed {rows} CPU comparison rows. Report: {output / 'summary.md'}", flush=True)
+    subprocess.run([
+        sys.executable, str(ROOT / "scripts" / "run_memory.py"),
+        "--build", str(build), "--results", str(output),
+    ], check=True)
 
 
 if __name__ == "__main__":
