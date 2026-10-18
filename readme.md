@@ -39,6 +39,7 @@ License notices remain in all submodules.
 | Ownership | Borrowed keys and values; key storage excluded from collection memory |
 | Datasets | Generated once per key type and size in each measurement process; shared across implementations/scenarios |
 | Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
+| Pointer datasets | Pointer-sized slots and seeded pair indices; pair hash-diversity checks run before population |
 | Strings | NUL-terminated; content equality; STL/Abseil hash string views |
 | String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |
 | CoreCLR integration | Pinned headers and implementation bodies; standalone types/contracts replace VM infrastructure/PCH includes |

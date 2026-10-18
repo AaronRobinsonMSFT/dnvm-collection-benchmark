@@ -209,6 +209,11 @@ void describe_maps(Visitor visitor)
     visitor("note.datasets",
         "Datasets are generated once per key type and size and reused within each measurement process. "
         "CPU and memory collection run in separate processes; collection state is not shared.");
+    visitor("note.pointer_datasets",
+        "Pointer datasets use pointer-sized slots; pair second components use deterministic seeded indices. "
+        "Hit/miss sets are disjoint. Before population, pair hit and miss sets each require at least 90% "
+        "distinct native full hashes and no hash shared by more than max(4, size/100) keys. "
+        "Pointer addresses and actual hashes vary by process. Older pointer/pair results used a different layout.");
     visitor("note.memory",
         "Memory is collected separately from timing. Requested bytes exclude dataset storage, borrowed "
         "pointees, tracking bookkeeping, allocator metadata/rounding and process RSS.");

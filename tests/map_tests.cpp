@@ -736,6 +736,55 @@ void dataset_memory_reuse()
         REQUIRE(data.values[i] == i);
 }
 
+void pointer_datasets()
+{
+    for (std::uint32_t count : {8, 64, 1024, 65536})
+    {
+        dnvm::DatasetFor<void*> pointers(count);
+        for (std::uint32_t i = 0; i < count; ++i)
+            REQUIRE(MurmurHash3_32_ptr(pointers.hits[i], 0) !=
+                    MurmurHash3_32_ptr(pointers.misses[i], 0));
+        dnvm::DatasetFor<dn_ptrpair_t> pairs(count);
+        dnvm::validate_pointer_pair_hashes(pairs.hits);
+        dnvm::validate_pointer_pair_hashes(pairs.misses);
+    }
+}
+
+void pointer_pair_collisions()
+{
+    std::array<std::uintptr_t, 32> storage{};
+    std::vector<dn_ptrpair_t> keys;
+    for (auto& slot : storage)
+        keys.push_back({&slot, &slot});
+    bool rejected = false;
+    try
+    {
+        dnvm::validate_pointer_pair_hashes(keys);
+    }
+    catch (const std::runtime_error& error)
+    {
+        rejected = std::string(error.what()).find("concentrated native hashes") != std::string::npos;
+    }
+    REQUIRE(rejected);
+    dnvm::RuntimePointerPairMap map;
+    for (auto key : keys)
+        REQUIRE(map.insert(key, nullptr));
+    for (auto key : keys)
+    {
+        void* value = &map;
+        REQUIRE(map.find(key, value));
+        REQUIRE(value == nullptr);
+        REQUIRE(!map.insert(key, &map));
+    }
+    for (auto key : keys)
+    {
+        REQUIRE(map.erase(key));
+        void* value = nullptr;
+        REQUIRE(!map.find(key, value));
+    }
+    REQUIRE(map.size() == 0);
+}
+
 template <typename Sequence>
 void sequence_contract(std::uint32_t count)
 {
@@ -860,6 +909,8 @@ int main(int argc, char** argv)
         dataset_reuse<dn_ptrpair_t>();
         dataset_reuse<const char*>();
         dataset_memory_reuse();
+        pointer_datasets();
+        pointer_pair_collisions();
         dnvm::for_each_sequence_family([](const char*, auto family, const char*) {
             using Sequence = typename decltype(family)::RuntimeSequence;
             for (std::uint32_t count : {0, 5, 8, 9, 32, 33, 64, 65, 1024})

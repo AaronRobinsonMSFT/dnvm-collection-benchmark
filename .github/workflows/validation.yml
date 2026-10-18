@@ -22,12 +22,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Initialize dependencies
         run: git -c core.longpaths=true submodule update --init --depth 1 --jobs 3
-      - name: Validate runtime collections
+      - name: Configure functional validation
         run: |
           cmake -S . -B build/validation -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-          cmake --build build/validation --parallel 4 --target map_tests
+      - name: Build functional validation
+        run: cmake --build build/validation --parallel 4 --target map_tests
+      - name: Run functional validation
+        run: |
           printf '%s\n' "$GITHUB_SHA" > build/validation/commit.txt
           ctest --test-dir build/validation --output-on-failure --no-tests=error \
             --output-junit "$PWD/build/validation/functional-tests.xml"

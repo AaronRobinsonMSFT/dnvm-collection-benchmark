@@ -1,17 +1,37 @@
 #ifndef DNVM_DATASET_H
 #define DNVM_DATASET_H
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "key_types.h"
+#include "dn-simdhash-utils.h"
 
 namespace dnvm
 {
 constexpr std::uint32_t DatasetSeed = 0x9e3779b9u;
+
+inline void validate_pointer_pair_hashes(const std::vector<dn_ptrpair_t>& keys)
+{
+    std::unordered_map<std::uint32_t, std::size_t> hashes;
+    hashes.reserve(keys.size());
+    const auto limit = std::max<std::size_t>(4, keys.size() / 100);
+    for (auto key : keys)
+    {
+        // The pinned specialization's hasher is private; use its exact component hash/combiner.
+        const auto hash = MurmurHash3_32_ptr(key.first, 0) ^ MurmurHash3_32_ptr(key.second, 1);
+        if (++hashes[hash] > limit)
+            throw std::runtime_error("Pointer-pair benchmark dataset has concentrated native hashes");
+    }
+    if (hashes.size() < keys.size() - keys.size() / 10)
+        throw std::runtime_error("Pointer-pair benchmark dataset has insufficient native hash diversity");
+}
 
 inline std::uint32_t dataset_key(std::uint32_t index)
 {
@@ -51,39 +71,44 @@ struct DatasetFor<std::uint32_t>
 template <>
 struct DatasetFor<void*>
 {
-    explicit DatasetFor(std::uint32_t count) : values(count), keys(2 * count)
+    explicit DatasetFor(std::uint32_t count) : values(count), keys(count)
     {
         for (std::uint32_t i = 0; i < count; ++i)
         {
-            hits.push_back(&keys[2 * i]);
-            misses.push_back(&keys[2 * i + 1]);
+            hits.push_back(&keys[i][0]);
+            misses.push_back(&keys[i][1]);
             values[i] = i;
         }
         hit_queries = hits;
     }
 
     std::vector<void*> hits, misses, hit_queries;
-    std::vector<std::uint32_t> values, keys;
+    std::vector<std::uint32_t> values;
+    std::vector<std::array<std::uintptr_t, 2>> keys;
 };
 
 template <>
 struct DatasetFor<dn_ptrpair_t>
 {
-    explicit DatasetFor(std::uint32_t count) : values(count), keys(4 * count)
+    explicit DatasetFor(std::uint32_t count) : values(count), keys(count)
     {
         for (std::uint32_t i = 0; i < count; ++i)
         {
-            hits.push_back({&keys[4 * i], &keys[4 * i + 1]});
+            const auto second = dataset_key(i) % count;
+            hits.push_back({&keys[i][0], &keys[second][1]});
             misses.push_back(i % 2 == 0
-                ? dn_ptrpair_t{&keys[4 * i], &keys[4 * i + 2]}
-                : dn_ptrpair_t{&keys[4 * i + 3], &keys[4 * i + 1]});
+                ? dn_ptrpair_t{&keys[i][0], &keys[second][2]}
+                : dn_ptrpair_t{&keys[i][3], &keys[second][1]});
             values[i] = i;
         }
         hit_queries = hits;
+        validate_pointer_pair_hashes(hits);
+        validate_pointer_pair_hashes(misses);
     }
 
     std::vector<dn_ptrpair_t> hits, misses, hit_queries;
-    std::vector<std::uint32_t> values, keys;
+    std::vector<std::uint32_t> values;
+    std::vector<std::array<std::uintptr_t, 4>> keys;
 };
 
 template <>
