@@ -1,10 +1,12 @@
 import copy
 import hashlib
+from html.parser import HTMLParser
 import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -104,43 +106,105 @@ class ReportTests(unittest.TestCase):
             (directory / "metadata.json").write_text(json.dumps(self.metadata))
             self.assertEqual(REPORT.write_reports(directory), 3)
             text = (directory / "summary.md").read_text()
-            self.assertIn(
-                "> On this configuration, for this runtime-derived workload, "
-                "how do the alternatives compare with runtime?", text
-            )
-            self.assertIn("not an answer to that interpretive question", text)
-            self.assertIn("keep, improve, or replace the runtime collection", text)
-            self.assertIn(
-                "the reader's judgment, informed by the collection contract "
-                "and application requirements.", text
-            )
+            self.assertIn("keep, improve, or replace a collection", text)
             self.assertIn("Known functional defect", text)
             self.assertIn("Failed to set thread affinity", text)
-            self.assertIn("## lookup_hit\n", text)
-            self.assertIn("| 8 | 10.000 | 20.000 (0.50x) | **5.000** (2.00x) |", text)
+            self.assertFalse(any(line.startswith("|") for line in text.splitlines()))
             self.assertEqual(len(json.loads((directory / "summary.json").read_text())), 3)
             self.assertEqual(len((directory / "summary.csv").read_text().splitlines()), 4)
+            self.assertIn("](summary.html)", text)
+            self.assertLess(text.index("graphs/collection-1.svg"), text.index("## Data exports"))
+            graph = ET.parse(directory / "graphs" / "collection-1.svg")
+            points = graph.findall(".//{http://www.w3.org/2000/svg}circle")
+            labels = graph.findall(".//{http://www.w3.org/2000/svg}text")
+            self.assertEqual(sum(label.text == "Lower is better" for label in labels), 1)
+            self.assertEqual(
+                [(point.attrib["data-implementation"], float(point.attrib["data-value"]))
+                 for point in points], [("runtime", 10), ("std", 20), ("abseil", 5)])
+            self.assertEqual({point.attrib["data-metric"] for point in points}, {"median_ns_per_key"})
+            html = (directory / "summary.html").read_text()
+            self.assertIn("<svg ", html)
+            self.assertIn("Known functional defect", html)
+            self.assertIn("Failed to set thread affinity", html)
+            tooltips = graph.findall(".//{http://www.w3.org/2000/svg}rect[@data-tooltip]")
+            self.assertEqual(len(tooltips), 1)
+            tooltip = "".join(tooltips[0].itertext())
+            self.assertIn("std: 20.0; 0.500x vs runtime; CV 0.00%", tooltip)
+            self.assertIn("abseil: 5.0; 2.000x vs runtime", tooltip)
 
-    def test_markdown_groups_sizes_and_highlights_fastest_ties_and_noise(self):
+    def test_graph_tooltips_keep_ties_variability_and_all_sizes(self):
         rows = REPORT.summarize(self.document, self.metadata)
-        for implementation, time, cv in (("runtime", 10, 5.01), ("std", 10, 5),
-                                         ("abseil", 20, 0)):
+        for row, time, cv in zip(list(rows), (10, 10, 20), (5.01, 5, 0)):
             rows.append({
-                "scenario": "lookup_hit", "size": 64, "implementation": implementation,
+                **row, "size": 64,
                 "median_ns_per_key": time, "speedup_vs_baseline": 10 / time,
                 "cv_percent": cv,
             })
         for row in rows[:3]:
             rows.append({**row, "scenario": "iterate"})
         text = REPORT.markdown(list(reversed(rows)), self.document["context"], self.metadata)
-        self.assertEqual(text.count("| Keys | runtime ns/key |"), 2)
-        self.assertLess(text.index("## iterate\n"), text.index("## lookup_hit\n"))
-        lookup = text.split("## lookup_hit\n")[1].split("<details>")[0]
-        small = "| 8 | 10.000 | 20.000 (0.50x) | **5.000** (2.00x) |"
-        large = "| 64 | **10.000** [!] | **10.000** (1.00x) | 20.000 (0.50x) |"
-        self.assertLess(lookup.index(small), lookup.index(large))
-        self.assertIn("<summary>Variability details (CV %)</summary>", text)
-        self.assertIn("| lookup_hit | 64 | 5.01 | 5.00 | 0.00 |", text)
+        self.assertIn("Noise warning", text)
+        root = ET.fromstring(REPORT.collection_graph(
+            "", list(reversed(rows)), IMPLEMENTATIONS,
+            {name: ("#0072b2", "none") for name in IMPLEMENTATIONS}))
+        tooltips = ["".join(element.itertext()) for element in root.findall(
+            ".//{http://www.w3.org/2000/svg}rect[@data-tooltip]")]
+        self.assertEqual(len(tooltips), 3)
+        self.assertTrue(tooltips[0].startswith("iterate: 8 elements"))
+        self.assertTrue(tooltips[1].startswith("lookup_hit: 8 elements"))
+        self.assertTrue(tooltips[2].startswith("lookup_hit: 64 elements"))
+        self.assertIn("runtime: 10; 1.000x vs runtime; CV 5.01%", tooltips[2])
+        self.assertIn("std: 10; 1.000x vs runtime; CV 5.00%", tooltips[2])
+
+    def test_html_index_has_one_link_per_collection_regardless_of_scenarios_or_metrics(self):
+        class NavigationParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.ids = []
+                self.links = []
+                self.rows = 0
+
+            def handle_starttag(self, tag, attributes):
+                attributes = dict(attributes)
+                if "id" in attributes:
+                    self.ids.append(attributes["id"])
+                if tag == "a" and attributes.get("href", "").startswith("#"):
+                    self.links.append(attributes["href"][1:])
+                if tag == "tr":
+                    self.rows += 1
+
+        self.expand_collections()
+        rows = REPORT.summarize(self.document, self.metadata)
+        rows += [{**row, "scenario": "future<&test"} for row in rows]
+        memory = REPORT.validate_memory(
+            self.memory_document(), self.document["context"], self.metadata["expected_benchmarks"])
+        memory["cases"] += [{**row, "scenario": "future<&test"} for row in memory["cases"]]
+        styles = {name: ("#0072b2", "none") for name in IMPLEMENTATIONS}
+        for measurements in (None, memory):
+            graphs = [
+                (collection, REPORT.collection_graph(
+                    collection, [row for row in rows if row["collection"] == collection],
+                    IMPLEMENTATIONS, styles,
+                    [row for row in measurements["cases"] if row["collection"] == collection]
+                    if measurements is not None else None))
+                for collection in COLLECTIONS
+            ]
+            html = REPORT.html_summary(
+                rows, self.document["context"], self.metadata, measurements, graphs)
+            parser = NavigationParser()
+            parser.feed(html)
+            expected = {f"collection-{index}" for index in range(1, len(COLLECTIONS) + 1)}
+            self.assertEqual(set(parser.links), expected)
+            self.assertEqual(len(parser.links), len(expected))
+            self.assertTrue(expected.issubset(parser.ids))
+            self.assertEqual(len(parser.ids), len(set(parser.ids)))
+            self.assertEqual(parser.rows, 1 + len(COLLECTIONS))
+            self.assertLess(html.index("<nav "), html.index("<svg "))
+            self.assertIn("future&lt;&amp;test", html)
+            navigation = html.split("<nav ", 1)[1].split("</nav>", 1)[0]
+            self.assertNotIn("lookup_hit", navigation)
+            self.assertNotIn("future", navigation)
+            self.assertIn("runtime, std, abseil", navigation)
 
     def test_collection_only_report_does_not_claim_functional_validation(self):
         self.metadata.update({
@@ -149,10 +213,63 @@ class ReportTests(unittest.TestCase):
         })
         rows = REPORT.summarize(self.document, self.metadata)
         text = REPORT.markdown(rows, self.document["context"], self.metadata)
-        self.assertIn("| functional_tests | not_run |", text)
+        self.assertIn("Functional validation was not run", text)
         self.assertIn("illustrative artifact warning", text)
         self.assertNotIn("Linux", text)
         self.assertNotIn("duplicate keys", text)
+
+    def test_summary_omits_repository_inventory_but_preserves_metadata(self):
+        self.metadata.update({"project_status": " M checkout-file.cpp", "project_commit": "abc"})
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "benchmarks.json").write_text(json.dumps(self.document))
+            original = json.dumps(self.metadata)
+            (directory / "metadata.json").write_text(original)
+            REPORT.write_reports(directory)
+            text = (directory / "summary.md").read_text()
+            self.assertNotIn("checkout-file.cpp", text)
+            self.assertNotIn("project_commit", text)
+            self.assertNotIn("Run setting", text)
+            self.assertEqual((directory / "metadata.json").read_text(), original)
+            html = (directory / "summary.html").read_text()
+            self.assertNotIn("checkout-file.cpp", html)
+            self.assertNotIn("project_commit", html)
+
+    def test_graphs_preserve_collections_tests_sizes_and_escape_labels(self):
+        self.expand_collections()
+        rows = REPORT.summarize(self.document, self.metadata)
+        original = list(rows)
+        rows += [{**row, "size": 64, "median_ns_per_key": row["median_ns_per_key"] * 2}
+                 for row in original]
+        rows += [{**row, "scenario": "future<&test", "size": 128} for row in original]
+        memory = REPORT.validate_memory(
+            self.memory_document(), self.document["context"], self.metadata["expected_benchmarks"])
+        styles = {name: ("#0072b2", "none") for name in IMPLEMENTATIONS}
+        for multiplier, collection in enumerate(COLLECTIONS, 1):
+            selected = [row for row in rows if row["collection"] == collection]
+            cases = [row for row in memory["cases"] if row["collection"] == collection]
+            original_cases = list(cases)
+            cases += [{**row, "size": 64} for row in original_cases]
+            cases += [{**row, "scenario": "future<&test", "size": 128,
+                       "footprint_bytes_per_key": 0} for row in original_cases]
+            root = ET.fromstring(REPORT.collection_graph(
+                collection + "<&", selected, IMPLEMENTATIONS, styles, cases))
+            points = root.findall(".//{http://www.w3.org/2000/svg}circle")
+            self.assertEqual(len(points), 18)
+            cpu = [point for point in points if point.attrib["data-metric"] == "median_ns_per_key"]
+            actual = {(point.attrib["data-implementation"], int(point.attrib["data-size"])):
+                      float(point.attrib["data-value"]) for point in cpu}
+            self.assertEqual(actual[("runtime", 8)], 10 * multiplier)
+            self.assertEqual(actual[("runtime", 64)], 20 * multiplier)
+            positions = {int(point.attrib["data-size"]): point.attrib for point in cpu
+                         if point.attrib["data-implementation"] == "runtime"}
+            self.assertLess(float(positions[8]["cx"]), float(positions[64]["cx"]))
+            self.assertLess(float(positions[64]["cy"]), float(positions[8]["cy"]))
+            labels = "".join(root.itertext())
+            self.assertIn("future<&test", labels)
+            self.assertIn(collection + "<&", labels)
+            panel_labels = root.findall(".//{http://www.w3.org/2000/svg}text")
+            self.assertEqual(sum(label.text == "Lower is better" for label in panel_labels), 4)
 
     def expand_collections(self):
         samples = self.document["benchmarks"]
@@ -193,8 +310,7 @@ class ReportTests(unittest.TestCase):
         for collection in COLLECTIONS:
             self.assertIn(f"## {collection}\n", text)
             self.assertIn("Artifact description for " + collection, text)
-        self.assertEqual(text.count("### lookup_hit\n"), 4)
-        self.assertEqual(text.count("#### Memory accounting\n"), 4)
+        self.assertEqual(text.count(" comparisons](graphs/"), 4)
         document["context"]["collections"] = "u32"
         with self.assertRaisesRegex(ValueError, "configuration mismatch: collections"):
             REPORT.validate_memory(
@@ -230,10 +346,9 @@ class ReportTests(unittest.TestCase):
         memory = REPORT.validate_memory(
             document, self.document["context"], self.metadata["expected_benchmarks"])
         text = REPORT.markdown(rows, self.document["context"], self.metadata, memory)
-        self.assertIn("Baseline: `candidate`.", text)
-        self.assertIn("reference ns/key (speedup)", text)
-        self.assertIn("### retained", text)
-        self.assertIn("### preallocated", text)
+        self.assertIn("Baseline for tooltip speedups: `candidate`.", text)
+        self.assertEqual({row["mode"] for row in memory["lifecycles"]},
+                         {"retained", "preallocated"})
         self.document["context"]["baseline"] = "absent"
         with self.assertRaisesRegex(ValueError, "Missing comparison baseline"):
             REPORT.summarize(self.document, self.metadata)
@@ -250,6 +365,45 @@ class ReportTests(unittest.TestCase):
             document, self.document["context"], self.metadata["expected_benchmarks"])
         self.assertEqual(len(memory["cases"]), 3)
         self.assertEqual(len(memory["lifecycles"]), 6)
+
+    def test_per_collection_lifecycle_modes_are_artifact_driven(self):
+        self.expand_collections()
+        document = self.memory_document()
+        document["lifecycle_modes_by_collection"] = {
+            COLLECTIONS[0]: ["preallocated"],
+            COLLECTIONS[1]: ["growing"],
+        }
+        lifecycles = []
+        for row in document["lifecycles"]:
+            if row["collection"] == COLLECTIONS[0]:
+                if row["mode"] == "reserved":
+                    continue
+                row["mode"] = "preallocated"
+            elif row["collection"] == COLLECTIONS[1] and row["mode"] == "reserved":
+                continue
+            lifecycles.append(row)
+        document["lifecycles"] = lifecycles
+        memory = REPORT.validate_memory(
+            document, self.document["context"], self.metadata["expected_benchmarks"])
+        text = REPORT.markdown(REPORT.summarize(self.document, self.metadata),
+                               self.document["context"], self.metadata, memory)
+        self.assertEqual(len(memory["lifecycles"]), 18)
+        self.assertIn("memory-lifecycle.csv", text)
+        self.assertEqual(sum(row["mode"] == "preallocated" for row in memory["lifecycles"]), 3)
+        document["lifecycles"].pop()
+        with self.assertRaisesRegex(ValueError, "Missing memory lifecycles"):
+            REPORT.validate_memory(
+                document, self.document["context"], self.metadata["expected_benchmarks"])
+
+    def test_rejects_malformed_per_collection_lifecycle_modes(self):
+        for declaration in ([], {"absent": ["new"]}, {"": []}, {"": [""]},
+                            {"": ["new", "new"]}, {"": "new"}):
+            document = self.memory_document()
+            document["lifecycle_modes_by_collection"] = declaration
+            with self.subTest(declaration=declaration), self.assertRaisesRegex(
+                    ValueError, "Invalid per-collection lifecycle modes"):
+                REPORT.validate_memory(
+                    document, self.document["context"], self.metadata["expected_benchmarks"])
 
     def memory_document(self):
         return {
@@ -272,7 +426,7 @@ class ReportTests(unittest.TestCase):
               for name in implementations for mode in ("growing", "reserved")],
         }
 
-    def test_memory_footprint_is_adjacent_and_cpu_numbers_are_unchanged(self):
+    def test_memory_graphs_and_exports_leave_cpu_numbers_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             (directory / "benchmarks.json").write_text(json.dumps(self.document))
@@ -294,12 +448,16 @@ class ReportTests(unittest.TestCase):
             (directory / "memory-metadata.json").write_text(json.dumps(metadata))
             REPORT.write_reports(directory)
             text = (directory / "summary.md").read_text()
-            self.assertLess(text.index("### Performance"), text.index("### Memory accounting"))
-            self.assertLess(text.index("### Memory accounting"), text.index("## Lifecycle"))
-            self.assertIn("| 8 | **9.000** | **9.000** | **9.000** |", text)
-            self.assertIn("no instrumented timings are reported", text)
+            self.assertFalse(any(line.startswith("|") for line in text.splitlines()))
+            self.assertIn("No instrumented timings are reported", text)
             memory = json.loads((directory / "memory-summary.json").read_text())
             self.assertEqual(memory["cases"][0]["footprint_bytes"], 72)
+            graph = ET.parse(directory / "graphs" / "collection-1.svg")
+            points = graph.findall(".//{http://www.w3.org/2000/svg}circle")
+            footprint = [float(point.attrib["data-value"]) for point in points
+                         if point.attrib["data-metric"] == "footprint_bytes_per_key"]
+            self.assertEqual(footprint, [9, 9, 9])
+            self.assertEqual((directory / "summary.html").read_text().count("<svg "), 1)
             self.assertEqual(len((directory / "memory-summary.csv").read_text().splitlines()), 4)
             self.assertEqual(before, {name: (directory / name).read_bytes() for name in before})
             metadata["cpu_artifact_hashes"]["benchmarks.json"] = "wrong"

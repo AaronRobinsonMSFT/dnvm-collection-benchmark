@@ -9,6 +9,7 @@
 #include "dataset.h"
 #include "maps.h"
 #include "memory_measurements.h"
+#include "sequence_measurements.h"
 #include "dn-simdhash-utils.h"
 #include "runtime_platform.h"
 
@@ -734,6 +735,117 @@ void dataset_memory_reuse()
     for (std::size_t i = 0; i < data.values.size(); ++i)
         REQUIRE(data.values[i] == i);
 }
+
+template <typename Sequence>
+void sequence_contract(std::uint32_t count)
+{
+    std::vector<void*> values = dnvm::shared_dataset<void*>(count).hits;
+    if (!values.empty())
+        values.front() = nullptr;
+    auto expected = values;
+    if constexpr (Sequence::intrusive)
+        std::reverse(expected.begin(), expected.end());
+    dnvm::with_sequence<Sequence>(values, 0, [&](auto& sequence) {
+        dnvm::check_sequence(sequence, {});
+        dnvm::populate_sequence(sequence, values);
+        dnvm::check_sequence(sequence, expected);
+        if constexpr (!Sequence::intrusive)
+        {
+            if (count != 0)
+            {
+                sequence.set(count - 1, nullptr);
+                auto changed = expected;
+                changed.back() = nullptr;
+                dnvm::check_sequence(sequence, changed);
+            }
+        }
+        sequence.clear();
+        sequence.clear();
+        dnvm::check_sequence(sequence, {});
+        dnvm::populate_sequence(sequence, values);
+        dnvm::check_sequence(sequence, expected);
+    });
+    if constexpr (!Sequence::intrusive)
+    {
+        if constexpr (Sequence::supports_reserve)
+        {
+            Sequence reserved(count);
+            dnvm::populate_sequence(reserved, values);
+            dnvm::check_sequence(reserved, expected);
+        }
+    }
+}
+
+template <typename Sequence>
+void sequence_memory_contract()
+{
+    for (std::uint32_t count : {8, 64, 1024})
+    {
+        dnvm::for_each_sequence_scenario<Sequence>([count](const char* scenario) {
+            const auto result = dnvm::measure_sequence_memory<Sequence>(scenario, count);
+            REQUIRE(result.after_destroy_heap_bytes == 0);
+            if (result.includes_destruction)
+            {
+                REQUIRE(result.traffic.allocations == result.traffic.deallocations);
+                REQUIRE(result.traffic.allocated_bytes == result.traffic.freed_bytes);
+                REQUIRE(result.traffic.live_bytes == 0);
+            }
+            if (std::string(scenario) == "unlink_relink")
+            {
+                REQUIRE(result.before_heap_bytes >= count * 2 * sizeof(void*));
+                REQUIRE(result.before_heap_bytes == result.after_heap_bytes);
+                REQUIRE(result.traffic.allocations == 0);
+                REQUIRE(result.traffic.deallocations == 0);
+            }
+        });
+        dnvm::for_each_sequence_lifecycle<Sequence>([count](const char*, bool reserved) {
+            const auto result = dnvm::measure_sequence_lifecycle<Sequence>(reserved, count);
+            REQUIRE(result.destroyed_heap_bytes == 0);
+            if constexpr (Sequence::intrusive)
+            {
+                REQUIRE(result.empty_heap_bytes >= count * 2 * sizeof(void*));
+                REQUIRE(result.empty_heap_bytes == result.populated_heap_bytes);
+                REQUIRE(result.populated_heap_bytes == result.cleared_heap_bytes);
+            }
+        });
+    }
+}
+
+void umap_allocation_failure()
+{
+    {
+        dnvm::RuntimeUMap map;
+        bool rejected = false;
+        try
+        {
+            map.reserve(0);
+        }
+        catch (const std::invalid_argument&)
+        {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+        REQUIRE(map.insert(nullptr, nullptr));
+        REQUIRE(map.size() == 1);
+    }
+    for (std::size_t failure = 1; failure <= 3; ++failure)
+    {
+        FailingAllocator allocator;
+        allocator.fail_at = failure;
+        bool rejected = false;
+        try
+        {
+            dnvm::RuntimeUMap map(0, &allocator.allocator);
+            map.insert(nullptr, nullptr);
+        }
+        catch (const std::bad_alloc&)
+        {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+        REQUIRE(allocator.live == 0);
+    }
+}
 }
 
 int main(int argc, char** argv)
@@ -748,6 +860,12 @@ int main(int argc, char** argv)
         dataset_reuse<dn_ptrpair_t>();
         dataset_reuse<const char*>();
         dataset_memory_reuse();
+        dnvm::for_each_sequence_family([](const char*, auto family, const char*) {
+            using Sequence = typename decltype(family)::RuntimeSequence;
+            for (std::uint32_t count : {0, 5, 8, 9, 32, 33, 64, 65, 1024})
+                sequence_contract<Sequence>(count);
+            sequence_memory_contract<Sequence>();
+        });
         for (std::uint32_t count : {8, 64, 1024, 65536})
         {
             contract<dnvm::RuntimeMap>(count);
@@ -755,6 +873,7 @@ int main(int argc, char** argv)
             family_contract<dnvm::PointerMaps>(count);
             family_contract<dnvm::PointerPairMaps>(count);
             family_contract<dnvm::StringMaps>(count);
+            family_contract<dnvm::UMapMaps>(count);
             coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreSHash>>(count);
             coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreMapSHash>>(count);
             coreclr_family_contract<dnvm::CoreClrFamily<dnvm::CoreSetSHash>>(count);
@@ -771,11 +890,12 @@ int main(int argc, char** argv)
         coreclr_memory<dnvm::CoreMapSHash>();
         coreclr_memory<dnvm::CoreSetSHash>();
         allocation_failure();
+        umap_allocation_failure();
         key_allocation_failure<dnvm::RuntimePointerMap>();
         key_allocation_failure<dnvm::RuntimePointerPairMap>();
         key_allocation_failure<dnvm::RuntimeStringMap>();
         precomputed_hash();
-        std::cout << "Passed: SIMD key families, CoreCLR hash collections, allocation accounting/failures; SIMD="
+        std::cout << "Passed: runtime hash/sequence collections, allocation accounting/failures; SIMD="
                   << dnvm_runtime_simd_path() << "\n";
         return 0;
     }

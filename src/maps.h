@@ -11,6 +11,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "key_types.h"
 #include "coreclr_maps.h"
+#include "runtime_umap.h"
 
 namespace dnvm
 {
@@ -168,6 +169,7 @@ using U32Maps = MapFamily<RuntimeMap>;
 using PointerMaps = MapFamily<RuntimePointerMap>;
 using PointerPairMaps = MapFamily<RuntimePointerPairMap>;
 using StringMaps = MapFamily<RuntimeStringMap>;
+using UMapMaps = MapFamily<RuntimeUMap>;
 
 template <typename Visitor>
 void for_each_family(Visitor visitor)
@@ -188,6 +190,9 @@ void for_each_family(Visitor visitor)
     visitor("setshash", CoreClrFamily<CoreSetSHash>{},
         "SetSHash<uint32_t> with default no-remove traits; duplicate keys retained; key 0 is reserved. "
         "STL unordered_multiset; Abseil btree_multiset. No mapped values.");
+    visitor("umap", UMapMaps{},
+        "dn_umap; separate-chaining hash table; borrowed pointer keys/values; native direct hash. "
+        "Reserve requests buckets. Replacement checks presence before native insert_or_assign.");
 }
 
 template <typename Visitor>
@@ -220,6 +225,9 @@ void describe_maps(Visitor visitor)
         "Known functional defect: u32 can insert a duplicate key after deletion. "
         "Other specializations share its core but were not independently reproduced. "
         "The separate reproducer is not run during collection.");
+    visitor("warning.umap_rehash",
+        "Native dn_umap rehash does not preserve its bucket array on allocation failure. "
+        "Such failure is fatal, not a recoverable benchmark result.");
 }
 }
 

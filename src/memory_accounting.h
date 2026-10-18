@@ -129,7 +129,7 @@ private:
     std::unordered_map<void*, std::size_t> blocks_;
 };
 
-// Counting allocators and untimed SHash array tracking consult this scope.
+// Counting allocators and untimed CoreCLR array tracking consult this scope.
 // The ledger uses ordinary scalar allocation.
 class MemoryScope
 {

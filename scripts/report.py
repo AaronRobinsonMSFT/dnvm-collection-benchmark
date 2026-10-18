@@ -3,6 +3,7 @@
 import argparse
 import csv
 import hashlib
+from html import escape
 import io
 import json
 import math
@@ -201,9 +202,19 @@ def validate_memory(document, context, expected_names):
     if (not isinstance(modes, list) or not modes or any(not isinstance(mode, str) or not mode for mode in modes)
             or len(modes) != len(set(modes))):
         raise ValueError("Missing or invalid lifecycle modes")
+    collection_modes = document.get("lifecycle_modes_by_collection", {})
+    collections = {collection for collection, _, _ in identities}
+    if (not isinstance(collection_modes, dict)
+            or not set(collection_modes).issubset(collections)
+            or any(not isinstance(names, list) or not names
+                   or any(not isinstance(name, str) or not name for name in names)
+                   or len(names) != len(set(names))
+                   for names in collection_modes.values())):
+        raise ValueError("Invalid per-collection lifecycle modes")
     expected_lifecycles = {
         (collection, implementation, mode, size)
-        for collection, implementation, size in identities for mode in modes
+        for collection, implementation, size in identities
+        for mode in collection_modes.get(collection, modes)
     }
     seen_lifecycles = set()
     for row in document["lifecycles"]:
@@ -225,203 +236,228 @@ def validate_memory(document, context, expected_names):
     return {"cases": cases, "lifecycles": document["lifecycles"]}
 
 
-def memory_markdown(cases, implementations):
-    sizes = {}
-    for row in cases:
-        sizes.setdefault(row["size"], {})[row["implementation"]] = row
-    lines = [
-        "### Memory accounting",
-        "",
-        "Post-batch collection footprint: inline object bytes plus live requested heap bytes.",
-        "This is a separate instrumented run; no instrumented timings are reported.",
-        "",
-        "| Keys | " + " | ".join(name + " B/key" for name in implementations) + " |",
-        "|" + "---:|" * (len(implementations) + 1),
-    ]
-    for size, entries in sorted(sizes.items()):
-        lowest = min(row["footprint_bytes_per_key"] for row in entries.values())
-        cells = [str(size)]
-        for name in implementations:
-            value = entries[name]["footprint_bytes_per_key"]
-            cell = f"{value:.3f}"
-            cells.append(f"**{cell}**" if value == lowest else cell)
-        lines.append("| " + " | ".join(cells) + " |")
-    lines += [
-        "",
-        "<details>",
-        "<summary>Memory details: exact bytes and allocation traffic</summary>",
-        "",
-        "| Keys | Measure | " + " | ".join(implementations) + " |",
-        "|---:|---|" + "---:|" * len(implementations),
-    ]
-    metrics = (
-        ("object_bytes", "Inline object bytes"),
-        ("before_heap_bytes", "Heap bytes before measured batch"),
-        ("after_heap_bytes", "Heap bytes after batch, before destruction"),
-        ("peak_footprint_bytes", "Peak footprint bytes"),
-        ("allocations", "Allocations in measured batch"),
-        ("deallocations", "Deallocations in measured batch"),
-        ("allocated_bytes", "Bytes allocated in measured batch"),
-        ("freed_bytes", "Bytes freed in measured batch"),
-        ("after_destroy_heap_bytes", "Heap bytes after destruction"),
-    )
-    for size, entries in sorted(sizes.items()):
-        for key, label in metrics:
-            cells = [str(size), label]
-            cells += [f"{entries[name][key]:,}" for name in implementations]
-            lines.append("| " + " | ".join(cells) + " |")
-    return lines + ["", "</details>", ""]
-
-
-def lifecycle_markdown(lifecycles, implementations):
-    lines = [
-        "## Lifecycle memory checkpoints",
-        "",
-        "Separate probes record empty, populated, cleared, and destroyed collections.",
-        "Live-state footprints include inline object bytes; destroyed collections have zero footprint.",
-        "",
-    ]
-    for mode in dict.fromkeys(row["mode"] for row in lifecycles):
-        sizes = {}
-        for row in lifecycles:
-            if row["mode"] == mode:
-                sizes.setdefault(row["size"], {})[row["implementation"]] = row
-        lines += [
-            f"### {mode}",
-            "",
-            "| Keys | State | " + " | ".join(name + " bytes" for name in implementations) + " |",
-            "|---:|---|" + "---:|" * len(implementations),
+def collection_graph(collection, rows, implementations, styles, memory=None):
+    metrics = [("CPU median (ns/element)", "median_ns_per_key", rows)]
+    if memory is not None:
+        metrics.append(("Collection footprint (B/element)", "footprint_bytes_per_key", memory))
+    scenarios = sorted({row["scenario"] for row in rows})
+    width, panel_width, panel_height = 40 + 500 * len(metrics), 500, 225
+    legend = []
+    x, y = 30, 57
+    for name in implementations:
+        space = 48 + len(name) * 8
+        if x + space > width - 30:
+            x, y = 30, y + 24
+        color, dash = styles[name]
+        legend += [
+            f'<line x1="{x}" y1="{y - 4}" x2="{x + 24}" y2="{y - 4}" '
+            f'stroke="{color}" stroke-width="2" stroke-dasharray="{dash}"/>',
+            f'<text x="{x + 30}" y="{y}">{escape(name)}</text>',
         ]
-        for size, entries in sorted(sizes.items()):
-            for state in ("empty", "populated", "cleared", "destroyed"):
-                cells = [str(size), state]
+        x += space
+    top = y + 35
+    height = top + len(scenarios) * panel_height + 20
+    title = f"{collection or 'Collections'}: CPU and memory comparisons" if memory is not None else (
+        f"{collection or 'Collections'}: CPU comparisons")
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(title, quote=True)}">',
+        f'<title>{escape(title)}</title>',
+        '<desc>Implementations compared for every test and measured size. '
+        'Lower is better. Each panel uses an independent linear vertical scale. '
+        'Element counts are equally spaced categories, not a linear horizontal scale.</desc>',
+        f'<rect width="{width}" height="{height}" fill="white"/>',
+        '<g font-family="sans-serif" font-size="12" fill="#24292f">',
+        f'<text x="30" y="27" font-size="18" font-weight="bold">{escape(collection or "Collections")}</text>',
+        *legend,
+    ]
+    for index, scenario in enumerate(scenarios):
+        for column, (label, metric, entries) in enumerate(metrics):
+            left = 85 + column * panel_width
+            plot_top = top + index * panel_height + 45
+            plot_width, plot_height = 400, 125
+            values = [row for row in entries if row["scenario"] == scenario]
+            sizes = sorted({row["size"] for row in values})
+            maximum = max(row[metric] for row in values) * 1.1 or 1
+            parts.append(
+                f'<text x="{left}" y="{plot_top - 28}" font-weight="bold">'
+                f'{escape(scenario)}: {escape(label)}</text>')
+            parts.append(
+                f'<text x="{left}" y="{plot_top - 12}" fill="#57606a">Lower is better</text>')
+            for tick in range(4):
+                value = maximum * tick / 3
+                tick_y = plot_top + plot_height * (1 - tick / 3)
+                parts += [
+                    f'<line x1="{left}" y1="{tick_y:.2f}" x2="{left + plot_width}" '
+                    f'y2="{tick_y:.2f}" stroke="#d0d7de"/>',
+                    f'<text x="{left - 8}" y="{tick_y + 4:.2f}" text-anchor="end">{value:.3g}</text>',
+                ]
+            positions = {
+                size: left + plot_width * (i / (len(sizes) - 1) if len(sizes) > 1 else 0.5)
+                for i, size in enumerate(sizes)
+            }
+            for size, position in positions.items():
+                parts.append(
+                    f'<text x="{position:.2f}" y="{plot_top + plot_height + 20}" '
+                    f'text-anchor="middle">{size:,}</text>')
+            parts.append(
+                f'<text x="{left + plot_width / 2}" y="{plot_top + plot_height + 39}" '
+                'text-anchor="middle">Element count (equally spaced sizes)</text>')
+            for name in implementations:
+                series = sorted((row for row in values if row["implementation"] == name),
+                                key=lambda row: row["size"])
+                color, dash = styles[name]
+                points = [(positions[row["size"]],
+                           plot_top + plot_height * (1 - row[metric] / maximum)) for row in series]
+                coordinates = " ".join(f"{px:.2f},{py:.2f}" for px, py in points)
+                parts.append(
+                    f'<polyline points="{coordinates}" fill="none" stroke="{color}" '
+                    f'stroke-width="2" stroke-dasharray="{dash}"/>')
+                for row, (px, py) in zip(series, points):
+                    description = f'{name}; {scenario}; {row["size"]} elements; {row[metric]} {label}'
+                    if metric == "median_ns_per_key":
+                        description += f'; CV {row["cv_percent"]:.2f}%'
+                    parts.append(
+                        f'<circle cx="{px:.2f}" cy="{py:.2f}" r="3.5" fill="{color}" '
+                        f'data-implementation="{escape(name, quote=True)}" data-size="{row["size"]}" '
+                        f'data-metric="{metric}" data-value="{row[metric]}">'
+                        f'<title>{escape(description)}</title></circle>')
+            for i, size in enumerate(sizes):
+                start = left if i == 0 else (positions[sizes[i - 1]] + positions[size]) / 2
+                end = left + plot_width if i == len(sizes) - 1 else (
+                    positions[size] + positions[sizes[i + 1]]) / 2
+                tooltip = [f"{scenario}: {size:,} elements", label]
+                by_name = {row["implementation"]: row for row in values if row["size"] == size}
                 for name in implementations:
-                    row = entries[name]
-                    footprint = row[state + "_heap_bytes"]
-                    if state != "destroyed":
-                        footprint += row["object_bytes"]
-                    cells.append(f"{footprint:,}")
-                lines.append("| " + " | ".join(cells) + " |")
-        lines.append("")
-    return lines
+                    row = by_name[name]
+                    detail = f"{name}: {row[metric]}"
+                    if metric == "median_ns_per_key":
+                        detail += (f'; {row["speedup_vs_baseline"]:.3f}x vs '
+                                   f'{row["baseline_implementation"]}; CV {row["cv_percent"]:.2f}%')
+                    else:
+                        detail += f'; total footprint {row["footprint_bytes"]:,} bytes'
+                    tooltip.append(detail)
+                parts.append(
+                    f'<rect x="{start:.2f}" y="{plot_top}" width="{end - start:.2f}" '
+                    f'height="{plot_height}" fill="transparent" data-tooltip="true">'
+                    f'<title>{escape(chr(10).join(tooltip))}</title></rect>')
+    return "\n".join(parts + ["</g>", "</svg>", ""])
+
+
+def summary_notes(rows, context, metadata, memory):
+    notes = [
+        "Compare implementations within this run, not across machines. "
+        "These measurements inform, but do not decide, whether to keep, improve, or replace a collection.",
+        f"Compiler: {context['compiler']}; STL: {context['stdlib']}; "
+        f"target: {context['system']} {context['architecture']} "
+        f"({context['pointer_bits']}-bit); runtime SIMD: {context['runtime_simd']}.",
+        f"Repetitions: {metadata['repetitions']}; minimum CPU seconds/sample: {metadata['min_time']}.",
+        "Lower is better. CPU graphs show median ns/element. Each panel uses an independent linear "
+        "vertical scale; measured element counts are equally spaced horizontal categories. "
+        "No workloads or collection sizes are averaged together.",
+    ]
+    if memory is not None:
+        notes.append(
+            "Memory graphs show post-batch object-plus-live-heap B/element, measured separately "
+            "from CPU timing. No instrumented timings are reported. Allocation traffic, peak "
+            "footprints, and lifecycle checkpoints remain in the CSV/JSON exports.")
+    if metadata.get("functional_tests") == "not_run":
+        notes.append("Functional validation was not run for these measurements.")
+    for key, value in context.items():
+        if key.startswith("note."):
+            notes.append(value)
+        elif key.startswith("warning."):
+            notes.append("Warning: " + value)
+        elif key.startswith("scenario."):
+            notes.append(key.removeprefix("scenario.") + ": " + value)
+    if any(row["cv_percent"] > 5 for row in rows):
+        notes.append("Noise warning: some measurements have CV above 5%; inspect tooltips and raw samples.")
+    for warning in metadata.get("measurement_warnings", []):
+        notes.append("Framework warning: " + warning)
+    return notes
 
 
 def markdown(rows, context, metadata, memory=None):
     lines = [
         "# Collection benchmark results",
         "",
-        "These exploratory measurements help the reader consider:",
-        "",
-        "> On this configuration, for this runtime-derived workload, how do the alternatives compare with runtime?",
-        "",
-        "The summary supplies data, not an answer to that interpretive question or a decision to",
-        "keep, improve, or replace the runtime collection. Reaching those conclusions requires",
-        "the reader's judgment, informed by the collection contract and application requirements.",
-        "",
-        "Ratios compare implementations in this run only; higher speedup is faster.",
-        "Times are CPU ns/key. CV is sample standard deviation / mean.",
-        "",
-        "**Bold** marks the lowest median time or accounted footprint in each row (including ties).",
-        "Speedup is relative to the artifact's baseline: above 1x is faster; below 1x is slower.",
-        "[!] marks CV above 5%; exact values are in the variability details below.",
-        "",
-        f"Compiler: {context['compiler']}; STL: {context['stdlib']}; "
-        f"target: {context['system']} {context['architecture']} "
-        f"({context['pointer_bits']}-bit); runtime SIMD: {context['runtime_simd']}.",
-        f"Repetitions: {metadata['repetitions']}; minimum CPU seconds/sample: {metadata['min_time']}.",
+        "[Open the interactive HTML summary](summary.html) for hover tooltips with all implementation "
+        "values at each measured size, CPU speedups, and variability (CV). "
+        "Markdown image previews may not expose tooltips.",
         "",
     ]
-    details = {key: value for key, value in metadata.items()
-               if value is None or isinstance(value, (str, bool, int, float))}
-    if details:
-        lines += ["| Run setting | Value |", "|---|---|"]
-        lines += ["| " + key + " | " + str(value).replace("|", "\\|").replace("\n", "<br>") + " |"
-                  for key, value in details.items()]
-        lines.append("")
-    for key, value in context.items():
-        if key.startswith("note."):
-            lines += [value, ""]
-        elif key.startswith("warning."):
-            lines += ["**Warning:** " + value, ""]
-    if any(row["cv_percent"] > 5 for row in rows):
-        lines += ["**Noise warning:** some measurements have CV above 5%; inspect raw samples.", ""]
-    for warning in metadata.get("measurement_warnings", []):
-        lines += [f"**Framework warning:** {warning}", ""]
-    if memory is not None:
-        lines += [
-            "**Memory accounting:** performance and memory are separate runs of the same configuration.",
-            "Footprint is sampled before destruction; peak includes pre-existing storage and transient growth.",
-            "Each case records whether its allocation traffic includes destruction.",
-            "",
-        ]
+    for note in summary_notes(rows, context, metadata, memory):
+        lines += [note, ""]
     inventory = comparison_inventory(metadata["expected_benchmarks"])
-    for collection, implementation_names in inventory.items():
-        baseline = baseline_for(collection, implementation_names, context)
-        if collection:
-            lines += [f"## {collection}", ""]
+    for index, (collection, implementations) in enumerate(inventory.items(), 1):
+        label = collection or "Collections"
+        lines += [f"## {label}", ""]
         description = context.get("collection." + collection)
         if description:
             lines += [description, ""]
-        lines += [f"Baseline: `{baseline}`.", ""]
-        scenarios = {}
-        for row in rows:
-            if row.get("collection", "") == collection:
-                scenarios.setdefault(row["scenario"], {}).setdefault(row["size"], {})[
-                    row["implementation"]
-                ] = row
-        for scenario, sizes in sorted(scenarios.items()):
-            lines += [f"{'###' if collection else '##'} {scenario}", ""]
-            description = context.get("scenario." + scenario)
-            if description:
-                lines += [description, ""]
-            lines += [
-                f"{'####' if collection else '###'} Performance",
-                "",
-                "| Keys | " + " | ".join(
-                    name + " ns/key" + (" (speedup)" if name != baseline else "")
-                    for name in implementation_names) + " |",
-                "|" + "---:|" * (len(implementation_names) + 1),
-            ]
-            for size, implementations in sorted(sizes.items()):
-                fastest = min(row["median_ns_per_key"] for row in implementations.values())
-                cells = [str(size)]
-                for implementation in implementation_names:
-                    row = implementations[implementation]
-                    cell = f"{row['median_ns_per_key']:.3f}"
-                    if row["median_ns_per_key"] == fastest:
-                        cell = f"**{cell}**"
-                    if implementation != baseline:
-                        cell += f" ({row['speedup_vs_baseline']:.2f}x)"
-                    if row["cv_percent"] > 5:
-                        cell += " [!]"
-                    cells.append(cell)
-                lines.append("| " + " | ".join(cells) + " |")
-            lines.append("")
-            if memory is not None:
-                section = memory_markdown([
-                    row for row in memory["cases"]
-                    if row.get("collection", "") == collection and row["scenario"] == scenario
-                ], implementation_names)
-                lines += ["#" + line if collection and line.startswith("#") else line for line in section]
-        if memory is not None:
-            section = lifecycle_markdown([
-                row for row in memory["lifecycles"] if row.get("collection", "") == collection
-            ], implementation_names)
-            lines += ["#" + line if collection and line.startswith("#") else line for line in section]
         lines += [
-            "<details>",
-            "<summary>Variability details (CV %)</summary>",
+            f"Baseline for tooltip speedups: `{baseline_for(collection, implementations, context)}`.",
             "",
-            "| Scenario | Keys | " + " | ".join(name + " CV %" for name in implementation_names) + " |",
-            "|---|---:|" + "---:|" * len(implementation_names),
+            f"![{label} comparisons](graphs/collection-{index}.svg)",
+            "",
         ]
-        for scenario, sizes in sorted(scenarios.items()):
-            for size, implementations in sorted(sizes.items()):
-                cells = [scenario, str(size)]
-                cells += [f"{implementations[name]['cv_percent']:.2f}" for name in implementation_names]
-                lines.append("| " + " | ".join(cells) + " |")
-        lines += ["", "</details>", ""]
+    lines += [
+        "## Data exports", "",
+        "CPU medians, speedups, CV, and samples: [CSV](summary.csv), [JSON](summary.json).", "",
+    ]
+    if memory is not None:
+        lines += [
+            "Memory footprints and allocation traffic: [CSV](memory-summary.csv), "
+            "[JSON](memory-summary.json).", "",
+            "Lifecycle checkpoints: [CSV](memory-lifecycle.csv).", "",
+        ]
     return "\n".join(lines) + "\n"
+
+
+def html_summary(rows, context, metadata, memory, graphs):
+    inventory = comparison_inventory(metadata["expected_benchmarks"])
+    parts = [
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        '<title>Collection benchmark results</title>',
+        '<style>body{font:16px system-ui,sans-serif;color:#24292f;background:#f6f8fa;'
+        'max-width:1100px;margin:32px auto;padding:0 20px}section{background:white;'
+        'padding:20px;margin:24px 0;border:1px solid #d0d7de;border-radius:6px}'
+        'svg{display:block;width:100%;height:auto}a{color:#0969da}'
+        'table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 12px;'
+        'border-bottom:1px solid #d0d7de}</style></head><body>',
+        '<h1>Collection benchmark results</h1>',
+        '<nav aria-labelledby="collection-index"><h2 id="collection-index">Collections</h2>',
+        '<table><thead><tr><th>Collection</th><th>Implementations</th></tr></thead><tbody>',
+    ]
+    for index, (collection, _) in enumerate(graphs, 1):
+        parts.append(
+            f'<tr><td><a href="#collection-{index}">{escape(collection or "Collections")}</a></td>'
+            f'<td>{escape(", ".join(inventory[collection]))}</td></tr>')
+    parts += [
+        "</tbody></table></nav>",
+        '<p>Hover over a measured size in a panel to see every implementation, including overlapping '
+        'points. CPU tooltips include speedup versus baseline (above 1x is faster) and CV '
+        '(sample standard deviation / mean).</p>',
+    ]
+    parts += [f"<p>{escape(note)}</p>" for note in summary_notes(rows, context, metadata, memory)]
+    for index, (collection, graph) in enumerate(graphs, 1):
+        parts += [
+            f'<section id="collection-{index}"><h2>{escape(collection or "Collections")}</h2>',
+            f"<p>{escape(context.get('collection.' + collection, ''))}</p>",
+            "<p>Baseline for tooltip speedups: "
+            f"<code>{escape(baseline_for(collection, inventory[collection], context))}</code>.</p>",
+            graph, "</section>",
+        ]
+    parts += [
+        '<p>CPU data: <a href="summary.csv">CSV</a>, <a href="summary.json">JSON</a>.</p>',
+    ]
+    if memory is not None:
+        parts.append(
+            '<p>Memory data: <a href="memory-summary.csv">CSV</a>, '
+            '<a href="memory-summary.json">JSON</a>; '
+            '<a href="memory-lifecycle.csv">lifecycle checkpoints</a>.</p>')
+    return "\n".join(parts + ["</body></html>", ""])
 
 
 def write_reports(directory):
@@ -447,6 +483,25 @@ def write_reports(directory):
                 raise ValueError("Memory dependency mismatch: " + dependency)
         memory = validate_memory(memory_document, document["context"], metadata["expected_benchmarks"])
     text = markdown(rows, document["context"], metadata, memory)
+    graph_directory = directory / "graphs"
+    graph_directory.mkdir(exist_ok=True)
+    inventory = comparison_inventory(metadata["expected_benchmarks"])
+    names = list(dict.fromkeys(name for implementations in inventory.values() for name in implementations))
+    colors = ("#0072b2", "#d55e00", "#009e73", "#cc79a7", "#806600", "#56b4e9", "#24292f")
+    dashes = ("none", "7 3", "2 3", "9 3 2 3")
+    styles = {name: (colors[index % len(colors)], dashes[index % len(dashes)])
+              for index, name in enumerate(names)}
+    graphs = []
+    for index, (collection, implementations) in enumerate(inventory.items(), 1):
+        graph = collection_graph(
+            collection, [row for row in rows if row["collection"] == collection],
+            implementations, styles,
+            [row for row in memory["cases"] if row["collection"] == collection]
+            if memory is not None else None)
+        (graph_directory / f"collection-{index}.svg").write_text(graph)
+        graphs.append((collection, graph))
+    (directory / "summary.html").write_text(
+        html_summary(rows, document["context"], metadata, memory, graphs))
     (directory / "summary.json").write_text(json.dumps(rows, indent=2) + "\n")
     output = io.StringIO(newline="")
     fields = [key for key in rows[0] if key != "samples_ns_per_key"]

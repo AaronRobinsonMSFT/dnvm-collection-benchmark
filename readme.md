@@ -27,6 +27,12 @@ License notices remain in all submodules.
 | `shash` | `SHash<MapSHashTraits<uint32_t, void*>>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
 | `mapshash` | `MapSHash<uint32_t, void*>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
 | `setshash` | `SetSHash<uint32_t>` | `std::unordered_multiset<uint32_t>` | `absl::btree_multiset<uint32_t>` |
+| `umap` | `dn_umap` | `std::unordered_map<void*, void*>` | `absl::flat_hash_map<void*, void*>` |
+| `sarray` | `SArray<void*>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
+| `inline_sarray` | `InlineSArray<void*, 8>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
+| `stack_sarray` | `StackSArray<void*>` | `std::vector<void*>` | `absl::InlinedVector<void*, 256 / sizeof(void*)>` |
+| `arraylist` | `ArrayList` | `std::vector<void*>`, `std::deque<void*>` | - |
+| `slist` | `SList` (head-only, intrusive) | `std::forward_list<void*>` (preallocated nodes, `splice_after`) | - |
 
 | Contract | Policy |
 |---|---|
@@ -35,12 +41,17 @@ License notices remain in all submodules.
 | Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
 | Strings | NUL-terminated; content equality; STL/Abseil hash string views |
 | String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |
-| CoreCLR integration | Unchanged pinned headers; standalone types/contracts in `src/coreclr_compat.h` |
+| CoreCLR integration | Pinned headers and implementation bodies; standalone types/contracts replace VM infrastructure/PCH includes |
 | CoreCLR duplicates | Retained; duplicate-build measures population, duplicate insertion, destruction |
 | CoreCLR sentinels | Key `0` reserved; `UINT32_MAX` also reserved for remove-enabled `shash` |
 | CoreCLR removal | `shash` erases all matches; default `mapshash`/`setshash` have no removal |
 | CoreCLR alternatives | STL hash containers vs. Abseil B-trees; B-trees have no reserve |
 | CoreCLR memory | Array allocations tracked only in untimed memory/test binaries |
+| dn_umap | Separate chaining; reserve requests nonzero buckets; native rehash allocation failure is not recoverable |
+| Sequences | Borrowed pointer elements; native iteration, indexed reads/writes, builds and clear/refill where supported |
+| Inline arrays | Eight inline pointers; stack arrays use 256 bytes; native and Abseil growth/clear policies differ |
+| ArrayList | Five inline pointers, then growing chunks; vector/deque alternatives; no reserve or concurrency workloads |
+| SList | Preallocated nodes: contiguous native array vs. allocator-owned STL nodes; traversal and unlink/relink exclude allocation; memory includes nodes, excluding harness pool-management fields |
 
 ## Requirements and setup
 
@@ -83,6 +94,11 @@ Build each platform, collect CPU and memory measurements, then generate reports.
 
 **Local:** Open `results/local/summary.md` in a Markdown viewer. CSV/JSON
 summaries, raw data, and logs are in the same output directory.
+The summary shows per-collection CPU and memory graphs. Open `summary.html` in a
+browser for hover tooltips with exact values, CPU speedups, and variability.
+The collection index links to the beginning of each collection's graphs.
+Detailed measurements and lifecycle checkpoints remain in the CSV/JSON exports.
+Keep the adjacent `graphs/` directory with the report when viewing or copying it.
 
 To regenerate reports without collecting new data:
 

@@ -8,6 +8,7 @@
 #include "dataset.h"
 #include "maps.h"
 #include "runtime_platform.h"
+#include "sequence_benchmarks.h"
 
 namespace
 {
@@ -207,6 +208,9 @@ int main(int argc, char** argv)
     dnvm::describe_maps([](const std::string& name, const char* description) {
         benchmark::AddCustomContext(name, description);
     });
+    dnvm::describe_sequences([](const std::string& name, const char* description) {
+        benchmark::AddCustomContext(name, description);
+    });
     benchmark::AddCustomContext("runtime_revision", DNVM_runtime_REVISION);
     benchmark::AddCustomContext("abseil_revision", DNVM_abseil_REVISION);
     benchmark::AddCustomContext("benchmark_revision", DNVM_benchmark_REVISION);
@@ -224,6 +228,7 @@ int main(int argc, char** argv)
         register_map<typename Family::StdMap>(std::string(name) + "/std");
         register_map<typename Family::AbseilMap>(std::string(name) + "/abseil");
     });
+    register_sequences();
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
 }

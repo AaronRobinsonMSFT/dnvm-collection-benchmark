@@ -172,11 +172,14 @@ def combine(directory, commit, collection_status="success"):
     if result["errors"]:
         lines += ["## Errors", "", *["- " + error for error in result["errors"]], ""]
     for name in complete:
+        report = (directory / runs[name]["measurements"] / "summary.md").read_text()
+        for prefix in ("graphs/", "summary.", "memory-summary.", "memory-lifecycle."):
+            report = report.replace("](" + prefix, "](" + runs[name]["measurements"] + "/" + prefix)
         lines += [
             "<details>",
             f"<summary>{name}</summary>",
             "",
-            (directory / runs[name]["measurements"] / "summary.md").read_text(),
+            report,
             "</details>",
             "",
         ]

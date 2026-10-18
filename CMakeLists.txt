@@ -45,9 +45,14 @@ add_library(runtime_map STATIC
     "${CONTAINERS}/dn-simdhash-ptrpair-ptr.c"
     "${CONTAINERS}/dn-simdhash-string-ptr.c"
     "${CONTAINERS}/dn-simdhash-utils.c"
+    "${CONTAINERS}/dn-umap.c"
     src/runtime_platform.c)
 target_include_directories(runtime_map PUBLIC "${CONTAINERS}" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(runtime_map PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(runtime_map PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/native")
+if(UNIX)
+    target_link_libraries(runtime_map PUBLIC m)
+endif()
 if(MSVC)
     target_compile_options(runtime_map PRIVATE /std:c11)
     # Keep the object that supplies the default assertion handler's linker alias.
@@ -58,7 +63,23 @@ if(MSVC)
 endif()
 
 add_library(map_adapters INTERFACE)
-target_link_libraries(map_adapters INTERFACE runtime_map absl::flat_hash_map absl::btree)
+set(CORECLR "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/coreclr")
+foreach(source sbuffer arraylist)
+    # Replace only the VM precompiled-header include; implementation bodies stay unchanged.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CORECLR}/utilcode/${source}.cpp")
+    file(READ "${CORECLR}/utilcode/${source}.cpp" standalone)
+    string(REPLACE "#include \"stdafx.h\"" "#include \"coreclr_compat.h\"" standalone "${standalone}")
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/coreclr/${source}.cpp" CONTENT "${standalone}" @ONLY)
+endforeach()
+add_library(runtime_sequences STATIC
+    "${CMAKE_CURRENT_BINARY_DIR}/coreclr/sbuffer.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/coreclr/arraylist.cpp")
+target_include_directories(runtime_sequences PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CORECLR}/inc")
+target_include_directories(runtime_sequences PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/native")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    target_compile_definitions(runtime_sequences PUBLIC HOST_64BIT)
+endif()
+target_link_libraries(map_adapters INTERFACE runtime_map runtime_sequences absl::flat_hash_map absl::btree absl::inlined_vector)
 target_include_directories(map_adapters INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/coreclr/inc")
 
 add_executable(map_benchmarks benchmarks/map_benchmarks.cpp)

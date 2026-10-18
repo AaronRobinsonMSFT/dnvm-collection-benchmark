@@ -102,6 +102,11 @@ class CombinedReportTests(unittest.TestCase):
             self.assertIn("not across machines", text)
             for name in PLATFORMS:
                 self.assertIn(f"<summary>{name}</summary>", text)
+                image = f"results-{name}/graphs/collection-1.svg"
+                self.assertIn("](" + image + ")", text)
+                self.assertTrue((directory / image).is_file())
+                self.assertIn(f"](results-{name}/summary.html)", text)
+                self.assertTrue((directory / f"results-{name}/summary.html").is_file())
 
     def test_measurement_only_inventory_does_not_require_functional_results(self):
         with tempfile.TemporaryDirectory() as temporary:
