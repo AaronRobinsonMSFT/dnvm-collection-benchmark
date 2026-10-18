@@ -57,6 +57,17 @@ jobs:
           PY
       - name: Initialize dependencies
         run: git -c core.longpaths=true submodule update --init --depth 1 --jobs 3
+      - name: Check dependency checkout
+        env:
+          RUN_NAME: ${{ matrix.name }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from run import check_dependencies
+          check_dependencies(Path("results") / ("dependencies-" + os.environ["RUN_NAME"] + ".json"))
+          PY
       - name: Build collection targets
         run: |
           cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release \

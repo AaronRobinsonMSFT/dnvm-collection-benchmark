@@ -20,7 +20,53 @@ ROOT = Path(__file__).resolve().parents[1]
 def git(*arguments, directory=ROOT):
     return subprocess.check_output(
         ["git", "-C", str(directory), *arguments], text=True
-    ).strip()
+    ).rstrip("\r\n")
+
+
+def dependency_inventory():
+    dependencies = {}
+    for name, path in (("runtime", "runtime"), ("abseil", "abseil-cpp"), ("benchmark", "benchmark")):
+        directory = ROOT / "external" / path
+        status = git("status", "--porcelain=v1", "--untracked-files=all", directory=directory)
+        revision = {
+            "commit": git("rev-parse", "HEAD", directory=directory),
+            "dirty": bool(status),
+            "status": status,
+        }
+        if status:
+            print(f"Dirty dependency {name}:\n{status}", file=sys.stderr, flush=True)
+            revision["diagnostics"] = {
+                "directory": str(directory),
+                "git_version": git("--version", directory=directory),
+                "config": {
+                    key: git("config", "--show-origin", "--get", "--default", "<unset>", key,
+                             directory=directory)
+                    for key in ("core.longpaths", "core.autocrlf", "core.symlinks",
+                                "core.ignorecase", "core.filemode")
+                },
+                "status_with_longpaths": git(
+                    "-c", "core.longpaths=true", "status", "--porcelain=v1",
+                    "--untracked-files=all", directory=directory),
+                "diff_raw_with_longpaths": git(
+                    "-c", "core.longpaths=true", "diff", "--no-ext-diff", "--no-color",
+                    "--raw", "HEAD", "--", directory=directory),
+                "modified_eol_with_longpaths": git(
+                    "-c", "core.longpaths=true", "ls-files", "--eol", "--modified",
+                    directory=directory),
+            }
+        dependencies[name] = revision
+    return dependencies
+
+
+def check_dependencies(destination):
+    dependencies = dependency_inventory()
+    with destination.open("x") as snapshot:
+        snapshot.write(json.dumps(dependencies, indent=2) + "\n")
+    for name, revision in dependencies.items():
+        if revision["dirty"]:
+            raise ValueError(f"Dependency has uncommitted changes: {name}\n"
+                             f"{revision['status']}\nDiagnostics: {destination}")
+    return dependencies
 
 
 def main():
@@ -42,16 +88,10 @@ def main():
     if output.exists():
         parser.error("Output already exists; choose a new directory to preserve previous results")
     output.mkdir(parents=True)
+    dependencies = check_dependencies(output / "dependencies.json")
     expected = subprocess.check_output(
         [str(benchmark), "--benchmark_list_tests=true", "--benchmark_filter=."], text=True
     ).splitlines()
-    dependencies = {}
-    for name, path in (("runtime", "runtime"), ("abseil", "abseil-cpp"), ("benchmark", "benchmark")):
-        directory = ROOT / "external" / path
-        dependencies[name] = {
-            "commit": git("rev-parse", "HEAD", directory=directory),
-            "dirty": bool(git("status", "--porcelain", directory=directory)),
-        }
     metadata = {
         "schema_version": 1,
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),

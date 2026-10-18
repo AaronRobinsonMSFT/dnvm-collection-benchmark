@@ -86,12 +86,16 @@ python3 scripts/run.py --build build/release --output results/local
 ```
 
 All collections run automatically. Use a new output directory for each run.
+Dirty dependencies stop collection before timing. Dependency snapshots are saved
+as `dependencies.json` and `memory-dependencies.json`; failures include changed
+paths, relevant Git settings, and a diagnostic comparison with long paths enabled.
 
 ## Collection and results
 
 Build each platform, collect CPU and memory measurements, then generate reports.
 
 **GitHub Actions:** The **Collections** workflow emits the `collection-results` artifact.
+Checkout snapshots are saved as `dependencies-<platform>.json` before building.
 
 **Local:** Open `results/local/summary.md` in a Markdown viewer. CSV/JSON
 summaries, raw data, and logs are in the same output directory.

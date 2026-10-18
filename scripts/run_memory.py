@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from report import build_settings, summarize, validate_memory, write_reports
-from run import ROOT, git
+from run import ROOT, check_dependencies, git
 
 
 def main():
@@ -23,7 +23,8 @@ def main():
     cpu = json.loads((results / "benchmarks.json").read_text())
     cpu_metadata = json.loads((results / "metadata.json").read_text())
     summarize(cpu, cpu_metadata)
-    if any((results / name).exists() for name in ("memory.json", "memory-metadata.json", "memory.log")):
+    if any((results / name).exists() for name in (
+            "memory.json", "memory-metadata.json", "memory.log", "memory-dependencies.json")):
         parser.error("Memory artifacts already exist; choose a new result directory")
     suffix = ".exe" if sys.platform == "win32" else ""
     binary_directory = build / "Release" if (build / "Release").is_dir() else build
@@ -34,14 +35,10 @@ def main():
     memory_settings = build_settings(build / "CMakeCache.txt")
     if cpu_settings != memory_settings:
         raise ValueError("Memory compiler flags or target settings differ from CPU results")
-    dependencies = {}
-    for name, path in (("runtime", "runtime"), ("abseil", "abseil-cpp"), ("benchmark", "benchmark")):
-        directory = ROOT / "external" / path
-        revision = git("rev-parse", "HEAD", directory=directory)
-        dirty = bool(git("status", "--porcelain", directory=directory))
-        if dirty or revision != cpu_metadata["dependencies"][name]["commit"]:
+    dependencies = check_dependencies(results / "memory-dependencies.json")
+    for name, revision in dependencies.items():
+        if revision["commit"] != cpu_metadata["dependencies"][name]["commit"]:
             raise ValueError("Memory dependency differs from CPU results: " + name)
-        dependencies[name] = {"commit": revision, "dirty": dirty}
     metadata = {
         "schema_version": 1,
         "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
