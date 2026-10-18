@@ -88,7 +88,8 @@ python3 scripts/run.py --build build/release --output results/local
 All collections run automatically. Use a new output directory for each run.
 Dirty dependencies stop collection before timing. Dependency snapshots are saved
 as `dependencies.json` and `memory-dependencies.json`; failures include changed
-paths, relevant Git settings, and a diagnostic comparison with long paths enabled.
+paths, relevant Git settings, file modes, and line endings. Git provenance queries
+enable long paths, matching dependency checkout on Windows.
 
 ## Collection and results
 

@@ -57,7 +57,11 @@ class RunTests(unittest.TestCase):
             self.assertIn("tracked file.txt", revision["status"])
             self.assertIn("new file.txt", revision["status"])
             diagnostics = revision["diagnostics"]
-            self.assertIn("false", diagnostics["config"]["core.longpaths"])
+            self.assertIn("command line:", diagnostics["config"]["core.longpaths"])
+            self.assertIn("true", diagnostics["config"]["core.longpaths"])
+            self.assertEqual(subprocess.check_output([
+                "git", "-C", str(runtime), "config", "--get", "core.longpaths",
+            ], text=True).strip(), "false")
             self.assertIn("tracked file.txt", diagnostics["diff_raw_with_longpaths"])
             self.assertIn("tracked file.txt", diagnostics["modified_eol_with_longpaths"])
             self.assertIn("new file.txt", diagnostics["status_with_longpaths"])

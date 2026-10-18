@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def git(*arguments, directory=ROOT):
     return subprocess.check_output(
-        ["git", "-C", str(directory), *arguments], text=True
+        ["git", "-c", "core.longpaths=true", "-C", str(directory), *arguments], text=True
     ).rstrip("\r\n")
 
 
