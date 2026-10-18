@@ -97,6 +97,8 @@ Build each platform, collect CPU and memory measurements, then generate reports.
 
 **GitHub Actions:** The **Collections** workflow emits the `collection-results` artifact.
 Checkout snapshots are saved as `dependencies-<platform>.json` before building.
+Open its root `summary.html` for all-platform graphs with one collection row
+linking to each platform's charts. Separate platform reports remain available.
 
 **Local:** Open `results/local/summary.md` in a Markdown viewer. CSV/JSON
 summaries, raw data, and logs are in the same output directory.
@@ -111,6 +113,18 @@ To regenerate reports without collecting new data:
 ```sh
 python3 scripts/report.py results/local
 ```
+
+To regenerate a downloaded combined artifact:
+
+```sh
+python3 scripts/ci_report.py results/collections-RUN --commit COMMIT
+```
+
+Optional `executive-summary.json` input in the artifact directory adds run-specific
+findings and action items. Its `commit` must match; `findings` entries contain
+`finding` and `detail`, and `action_items` entries contain `action` and `detail`.
+An optional `methodology` string describes the analysis. Conclusions are input
+data, not collection-specific rules in the report generator.
 
 ## Functional validation (Linux only)
 

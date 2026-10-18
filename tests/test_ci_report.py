@@ -1,4 +1,5 @@
 import hashlib
+from html.parser import HTMLParser
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +26,33 @@ PLATFORMS = {
     "windows-x86": ("Windows", "MSVC", "32", "x86", "sse2"),
 }
 VALIDATION_RUNS = ("linux-gcc-x64", "linux-clang-x64")
+
+
+class SummaryLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.ids = []
+        self.links = []
+        self.svg_count = 0
+        self.navigation_rows = 0
+        self.in_navigation = False
+
+    def handle_starttag(self, tag, attributes):
+        attributes = dict(attributes)
+        if "id" in attributes:
+            self.ids.append(attributes["id"])
+        if tag == "a":
+            self.links.append(attributes["href"])
+        if tag == "svg":
+            self.svg_count += 1
+        if tag == "nav":
+            self.in_navigation = True
+        if tag == "tr" and self.in_navigation:
+            self.navigation_rows += 1
+
+    def handle_endtag(self, tag):
+        if tag == "nav":
+            self.in_navigation = False
 
 
 class CombinedReportTests(unittest.TestCase):
@@ -126,6 +154,67 @@ class CombinedReportTests(unittest.TestCase):
             self.assertEqual(len((directory / "summary.csv").read_text().splitlines()), 16)
             self.assertEqual(len((directory / "memory-summary.csv").read_text().splitlines()), 16)
 
+    def test_html_keeps_all_graphs_hover_values_and_collection_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory, multiple_collections=True)
+            CI.combine(directory, self.commit)
+            text = (directory / "summary.html").read_text()
+            parser = SummaryLinks()
+            parser.feed(text)
+            self.assertEqual(parser.svg_count, len(PLATFORMS) * len(test_report.COLLECTIONS))
+            self.assertEqual(len(parser.ids), len(set(parser.ids)))
+            self.assertEqual(parser.navigation_rows, 1 + len(test_report.COLLECTIONS))
+            self.assertLess(text.index("<nav "), text.index("<svg "))
+            for link in parser.links:
+                if link.startswith("#"):
+                    self.assertIn(link[1:], parser.ids)
+                else:
+                    self.assertTrue((directory / link).is_file(), link)
+            tooltips = 0
+            for name in PLATFORMS:
+                platform = directory / ("results-" + name)
+                for path in (platform / "graphs").glob("*.svg"):
+                    self.assertIn(path.read_text(), text)
+                tooltips += (platform / "summary.html").read_text().count('data-tooltip="true"')
+            self.assertEqual(text.count('data-tooltip="true"'), tooltips)
+            navigation = text.split("<nav ", 1)[1].split("</nav>", 1)[0]
+            self.assertNotIn("lookup_hit", navigation)
+            self.assertIn("Lower is better", text)
+            self.assertIn("not across machines", text)
+
+    def test_html_includes_escaped_run_specific_findings_and_rejects_stale_notes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory)
+            notes = {
+                "commit": self.commit,
+                "methodology": "Within-run comparisons <only>",
+                "findings": [{"finding": "Finding <one>", "detail": "Input data, not a <script>."}],
+                "action_items": [{"action": "Follow up", "detail": "Investigate A & B."}],
+            }
+            path = directory / "executive-summary.json"
+            path.write_text(json.dumps(notes))
+            self.assertEqual(CI.combine(directory, self.commit)["errors"], [])
+            text = (directory / "summary.html").read_text()
+            self.assertIn("Finding &lt;one&gt;", text)
+            self.assertIn("not a &lt;script&gt;", text)
+            self.assertIn("Investigate A &amp; B.", text)
+            self.assertIn("Within-run comparisons &lt;only&gt;", text)
+            for changes in (
+                    {"commit": "wrong"},
+                    {"methodology": 42},
+                    {"findings": [{"finding": "Missing detail"}]},
+                    {"action_items": ["Invalid entry"]}):
+                with self.subTest(changes=changes):
+                    path.write_text(json.dumps({**notes, **changes}))
+                    result = CI.combine(directory, self.commit)
+                    self.assertEqual(len(result["errors"]), 1)
+                    self.assertIn("executive-summary.json", result["errors"][0])
+                    text = (directory / "summary.html").read_text()
+                    self.assertIn("<h2>Errors</h2>", text)
+                    self.assertNotIn("Finding &lt;one&gt;", text)
+
     def test_reports_partial_results_and_platform_or_commit_mismatches(self):
         cases = ("missing", "commit", "architecture", "dataset")
         for case in cases:
@@ -162,6 +251,15 @@ class CombinedReportTests(unittest.TestCase):
                 self.assertEqual(len(result["errors"]), 1)
                 self.assertIn("windows-x86", result["errors"][0])
                 self.assertIn("windows-x86 | missing or invalid", (directory / "summary.md").read_text())
+                text = (directory / "summary.html").read_text()
+                self.assertIn("Missing or invalid", text)
+                self.assertIn("<h2>Errors</h2>", text)
+                parser = SummaryLinks()
+                parser.feed(text)
+                self.assertEqual(parser.svg_count, 4)
+                for link in parser.links:
+                    if link.startswith("#"):
+                        self.assertIn(link[1:], parser.ids)
 
     def test_combines_all_key_families_and_keeps_their_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -210,6 +308,10 @@ class CombinedReportTests(unittest.TestCase):
             self.assertEqual(result["platforms"], [])
             for name in ("summary.csv", "memory-summary.csv", "memory-lifecycle.csv"):
                 self.assertFalse((directory / name).exists())
+            text = (directory / "summary.html").read_text()
+            self.assertNotIn("<svg ", text)
+            self.assertNotIn('href="summary.csv"', text)
+            self.assertIn("Missing or invalid", text)
 
     def test_discovers_unfamiliar_platforms_and_changed_test_inventories(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -225,6 +327,10 @@ class CombinedReportTests(unittest.TestCase):
             self.assertEqual(len(result["platforms"]), 6)
             self.assertEqual(result["functional"]["linux-gcc-x64"], "passed")
             self.assertIn("future-platform | complete | 3 | 3", (directory / "summary.md").read_text())
+            parser = SummaryLinks()
+            parser.feed((directory / "summary.html").read_text())
+            self.assertEqual(parser.svg_count, 6)
+            self.assertIn("results-future-platform/summary.html", parser.links)
 
     def test_missing_run_descriptor_or_entire_artifact_cannot_report_success(self):
         for filename in ("run-windows-x86.json", "results-windows-x86/benchmarks.json"):

@@ -17,6 +17,14 @@ MEMORY_CONTEXT_FIELDS = (
     "dataset_seed", "stdlib", "sanitizers", "runtime_revision", "abseil_revision",
     "benchmark_revision",
 )
+HTML_STYLE = (
+    "body{font:16px system-ui,sans-serif;color:#24292f;background:#f6f8fa;"
+    "max-width:1100px;margin:32px auto;padding:0 20px}section{background:white;"
+    "padding:20px;margin:24px 0;border:1px solid #d0d7de;border-radius:6px}"
+    "svg{display:block;width:100%;height:auto}a{color:#0969da}"
+    "table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 12px;"
+    "border-bottom:1px solid #d0d7de}"
+)
 
 
 def build_settings(path):
@@ -414,18 +422,27 @@ def markdown(rows, context, metadata, memory=None):
     return "\n".join(lines) + "\n"
 
 
+def html_collections(context, metadata, graphs, prefix=""):
+    inventory = comparison_inventory(metadata["expected_benchmarks"])
+    parts = []
+    for index, (collection, graph) in enumerate(graphs, 1):
+        parts += [
+            f'<section id="{escape(prefix)}collection-{index}"><h2>{escape(collection or "Collections")}</h2>',
+            f"<p>{escape(context.get('collection.' + collection, ''))}</p>",
+            "<p>Baseline for tooltip speedups: "
+            f"<code>{escape(baseline_for(collection, inventory[collection], context))}</code>.</p>",
+            graph, "</section>",
+        ]
+    return "\n".join(parts)
+
+
 def html_summary(rows, context, metadata, memory, graphs):
     inventory = comparison_inventory(metadata["expected_benchmarks"])
     parts = [
         '<!doctype html><html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         '<title>Collection benchmark results</title>',
-        '<style>body{font:16px system-ui,sans-serif;color:#24292f;background:#f6f8fa;'
-        'max-width:1100px;margin:32px auto;padding:0 20px}section{background:white;'
-        'padding:20px;margin:24px 0;border:1px solid #d0d7de;border-radius:6px}'
-        'svg{display:block;width:100%;height:auto}a{color:#0969da}'
-        'table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 12px;'
-        'border-bottom:1px solid #d0d7de}</style></head><body>',
+        f'<style>{HTML_STYLE}</style></head><body>',
         '<h1>Collection benchmark results</h1>',
         '<nav aria-labelledby="collection-index"><h2 id="collection-index">Collections</h2>',
         '<table><thead><tr><th>Collection</th><th>Implementations</th></tr></thead><tbody>',
@@ -441,14 +458,7 @@ def html_summary(rows, context, metadata, memory, graphs):
         '(sample standard deviation / mean).</p>',
     ]
     parts += [f"<p>{escape(note)}</p>" for note in summary_notes(rows, context, metadata, memory)]
-    for index, (collection, graph) in enumerate(graphs, 1):
-        parts += [
-            f'<section id="collection-{index}"><h2>{escape(collection or "Collections")}</h2>',
-            f"<p>{escape(context.get('collection.' + collection, ''))}</p>",
-            "<p>Baseline for tooltip speedups: "
-            f"<code>{escape(baseline_for(collection, inventory[collection], context))}</code>.</p>",
-            graph, "</section>",
-        ]
+    parts.append(html_collections(context, metadata, graphs))
     parts += [
         '<p>CPU data: <a href="summary.csv">CSV</a>, <a href="summary.json">JSON</a>.</p>',
     ]
