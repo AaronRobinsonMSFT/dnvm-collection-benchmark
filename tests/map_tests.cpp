@@ -712,6 +712,38 @@ void coreclr_native_memory()
         REQUIRE(::operator new[](std::numeric_limits<std::size_t>::max(), std::nothrow) == nullptr);
     }
 }
+
+template <typename Key>
+void dataset_reuse()
+{
+    auto& first = dnvm::shared_dataset<Key>(8);
+    auto* keys = first.hits.data();
+    auto* values = first.values.data();
+    auto& other = dnvm::shared_dataset<Key>(64);
+    REQUIRE(&first != &other);
+    REQUIRE(first.hits.size() == 8);
+    REQUIRE(other.hits.size() == 64);
+    REQUIRE(first.hits.data() == keys);
+    REQUIRE(first.values.data() == values);
+    REQUIRE(&dnvm::shared_dataset<Key>(8) == &first);
+    REQUIRE(&dnvm::shared_dataset<Key>(64) == &other);
+}
+
+void dataset_memory_reuse()
+{
+    auto& data = dnvm::shared_dataset<std::uint32_t>(64);
+    auto* values = data.values.data();
+    const auto first = dnvm::measure_memory<dnvm::CoreSHash>("duplicate_build", 64);
+    dnvm::measure_memory<dnvm::CoreMapSHash>("replace", 64);
+    dnvm::measure_lifecycle<dnvm::CoreSetSHash>(true, 64);
+    const auto second = dnvm::measure_memory<dnvm::CoreSHash>("duplicate_build", 64);
+    REQUIRE(first.after_heap_bytes == second.after_heap_bytes);
+    REQUIRE(first.traffic.allocated_bytes == second.traffic.allocated_bytes);
+    REQUIRE(first.traffic.allocations == second.traffic.allocations);
+    REQUIRE(data.values.data() == values);
+    for (std::size_t i = 0; i < data.values.size(); ++i)
+        REQUIRE(data.values[i] == i);
+}
 }
 
 int main(int argc, char** argv)
@@ -721,6 +753,11 @@ int main(int argc, char** argv)
         if (argc == 2 && std::string(argv[1]) == "--reproduce-duplicate")
             return reproduce_duplicate();
         REQUIRE(argc == 1);
+        dataset_reuse<std::uint32_t>();
+        dataset_reuse<void*>();
+        dataset_reuse<dn_ptrpair_t>();
+        dataset_reuse<const char*>();
+        dataset_memory_reuse();
         for (std::uint32_t count : {8, 64, 1024, 65536})
         {
             contract<dnvm::RuntimeMap>(count);

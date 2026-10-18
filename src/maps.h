@@ -201,6 +201,9 @@ void describe_maps(Visitor visitor)
         "Times are CPU ns/key. Builds include construction, reservation and destruction; "
         "erase_insert includes both operations; clear_refill includes clearing and refilling.");
     visitor("note.hashes", "Default hashes and allocation policies differ; exceptions are described per collection.");
+    visitor("note.datasets",
+        "Datasets are generated once per key type and size and reused within each measurement process. "
+        "CPU and memory collection run in separate processes; collection state is not shared.");
     visitor("note.memory",
         "Memory is collected separately from timing. Requested bytes exclude dataset storage, borrowed "
         "pointees, tracking bookkeeping, allocator metadata/rounding and process RSS.");

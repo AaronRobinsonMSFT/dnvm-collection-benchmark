@@ -31,6 +31,7 @@ License notices remain in all submodules.
 | Contract | Policy |
 |---|---|
 | Ownership | Borrowed keys and values; key storage excluded from collection memory |
+| Datasets | Generated once per key type and size in each measurement process; shared across implementations/scenarios |
 | Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
 | Strings | NUL-terminated; content equality; STL/Abseil hash string views |
 | String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |

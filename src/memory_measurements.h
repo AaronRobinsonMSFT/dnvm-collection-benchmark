@@ -139,7 +139,7 @@ struct MemoryMeasurement
 template <typename Map>
 MemoryMeasurement measure_memory(const std::string& scenario, std::uint32_t size)
 {
-    MapDataset<Map> data(size);
+    auto& data = shared_dataset<typename Map::key_type>(size);
     MemoryAccount account;
     MemoryScope scope(account);
     MemoryMeasurement result{};
@@ -177,7 +177,7 @@ struct LifecycleMeasurement
 template <typename Map>
 LifecycleMeasurement measure_lifecycle(bool reserved, std::uint32_t size)
 {
-    MapDataset<Map> data(size);
+    auto& data = shared_dataset<typename Map::key_type>(size);
     MemoryAccount account;
     MemoryScope scope(account);
     LifecycleMeasurement result{};

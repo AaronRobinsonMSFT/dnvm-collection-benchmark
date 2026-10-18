@@ -14,7 +14,7 @@ namespace
 template <typename Map>
 void lookup(benchmark::State& state, bool hit)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     const auto& keys = hit ? data.hit_queries : data.misses;
@@ -34,7 +34,7 @@ void lookup(benchmark::State& state, bool hit)
 template <typename Map>
 void insert(benchmark::State& state, bool reserved)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     for (auto _ : state)
     {
         Map map(reserved ? static_cast<std::uint32_t>(data.hits.size()) : 0);
@@ -51,7 +51,7 @@ void insert(benchmark::State& state, bool reserved)
 template <typename Map>
 void duplicate(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     for (auto _ : state)
@@ -68,7 +68,7 @@ void duplicate(benchmark::State& state)
 template <typename Map>
 void duplicate_build(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     for (auto _ : state)
     {
         Map map;
@@ -82,7 +82,7 @@ void duplicate_build(benchmark::State& state)
 template <typename Map>
 void replace(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     for (auto _ : state)
@@ -100,7 +100,7 @@ void replace(benchmark::State& state)
 template <typename Map>
 void erase_insert(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     for (auto _ : state)
@@ -119,7 +119,7 @@ void erase_insert(benchmark::State& state)
 template <typename Map>
 void iterate(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     for (auto _ : state)
@@ -144,7 +144,7 @@ void iterate(benchmark::State& state)
 template <typename Map>
 void clear_refill(benchmark::State& state)
 {
-    dnvm::MapDataset<Map> data(static_cast<std::uint32_t>(state.range(0)));
+    auto& data = dnvm::shared_dataset<typename Map::key_type>(static_cast<std::uint32_t>(state.range(0)));
     Map map;
     dnvm::populate(map, data);
     for (auto _ : state)

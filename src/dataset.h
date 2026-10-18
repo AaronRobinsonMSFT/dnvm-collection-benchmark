@@ -2,6 +2,7 @@
 #define DNVM_DATASET_H
 
 #include <cstdint>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -112,6 +113,14 @@ using Dataset = DatasetFor<std::uint32_t>;
 
 template <typename Map>
 using MapDataset = DatasetFor<typename Map::key_type>;
+
+template <typename Key>
+DatasetFor<Key>& shared_dataset(std::uint32_t count)
+{
+    // Construct in place: pointer/string keys borrow storage owned by the dataset.
+    static std::map<std::uint32_t, DatasetFor<Key>> datasets;
+    return datasets.try_emplace(count, count).first->second;
+}
 
 template <typename Map, typename Data>
 void populate(Map& map, Data& data)
