@@ -1,4 +1,4 @@
-"""Combine platform artifacts and functional results from one Collections run."""
+"""Combine platform artifacts from one Collections run."""
 
 import argparse
 import csv
@@ -75,13 +75,13 @@ def combine(directory, commit, collection_status="success"):
                     or type(run["expected_runs"]) is not int or run["expected_runs"] <= 0):
                 raise ValueError("Invalid, duplicate, or mismatched run inventory")
             for key in ("measurements", "validation"):
-                value = run[key]
+                value = run.get(key) if key == "validation" else run[key]
                 if key == "validation" and value is None:
                     continue
                 if not isinstance(value, str) or not value or Path(value).name != value or value in (".", ".."):
                     raise ValueError("Run inventory must reference child artifact directories")
             paths = {value for key, value in run.items() if key in ("measurements", "validation") and value is not None}
-            if paths & used_directories or run["measurements"] == run["validation"]:
+            if paths & used_directories or run["measurements"] == run.get("validation"):
                 raise ValueError("Run inventory reuses an artifact directory")
             runs[name] = run
             used_directories.update(paths)
@@ -93,7 +93,7 @@ def combine(directory, commit, collection_status="success"):
             f"Incomplete run inventory: found {len(runs)}, declared counts {sorted(expected_counts)}")
     baseline = None
     for name, run in runs.items():
-        if run["validation"] is not None:
+        if run.get("validation") is not None:
             try:
                 read_validation(directory / run["validation"], commit)
                 result["functional"][name] = "passed"
@@ -139,12 +139,17 @@ def combine(directory, commit, collection_status="success"):
         "",
         f"Commit: `{commit}`",
         "",
-        "## Functional validation",
-        "",
-        "| Validation run | Status |",
-        "|---|---|",
-        *[f"| {name} | {status} |" for name, status in result["functional"].items()],
-        "",
+    ]
+    if result["functional"]:
+        lines += [
+            "## Functional validation",
+            "",
+            "| Validation run | Status |",
+            "|---|---|",
+            *[f"| {name} | {status} |" for name, status in result["functional"].items()],
+            "",
+        ]
+    lines += [
         "## CPU and memory collection",
         "",
         "| Platform | Status | CPU comparisons | Memory scenarios |",

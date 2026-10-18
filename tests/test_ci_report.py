@@ -103,6 +103,24 @@ class CombinedReportTests(unittest.TestCase):
             for name in PLATFORMS:
                 self.assertIn(f"<summary>{name}</summary>", text)
 
+    def test_measurement_only_inventory_does_not_require_functional_results(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.populate(directory)
+            for path in directory.glob("run-*.json"):
+                descriptor = json.loads(path.read_text())
+                descriptor.pop("validation")
+                path.write_text(json.dumps(descriptor))
+            for path in directory.glob("validation-*/functional-tests.xml"):
+                path.unlink()
+            result = CI.combine(directory, self.commit)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["platforms"]), 5)
+            self.assertEqual(result["functional"], {})
+            self.assertNotIn("## Functional validation", (directory / "summary.md").read_text())
+            self.assertEqual(len((directory / "summary.csv").read_text().splitlines()), 16)
+            self.assertEqual(len((directory / "memory-summary.csv").read_text().splitlines()), 16)
+
     def test_reports_partial_results_and_platform_or_commit_mismatches(self):
         cases = ("missing", "commit", "architecture", "dataset")
         for case in cases:

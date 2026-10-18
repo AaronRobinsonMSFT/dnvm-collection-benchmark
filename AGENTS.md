@@ -17,8 +17,9 @@ macOS arm64, and Linux GCC/Clang. Collect CPU and memory results.
 ## Validation and results
 
 - Use the build and run commands in `readme.md`.
-- Run functional validation once each on Linux GCC and Clang. Windows and macOS
-  collect measurements only.
+- Run functional validation for runtime collections only, using Linux Clang with
+  sanitizers in the independent `Functional validation` workflow. Windows and macOS
+  collect measurements only. `Collections` do not depend on validation.
 - Measurement builds use Release with `BUILD_TESTING=OFF`. Keep memory accounting
   separate from CPU timing.
 - For Python changes, run

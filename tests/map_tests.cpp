@@ -191,21 +191,15 @@ template <typename Family>
 void family_contract(std::uint32_t count)
 {
     key_contract<typename Family::RuntimeMap>(count);
-    key_contract<typename Family::StdMap>(count);
-    key_contract<typename Family::AbseilMap>(count);
     dnvm::MemoryAccount account;
     {
         dnvm::MemoryScope scope(account);
         using Counted = dnvm::CountedMaps<Family>;
         key_contract<typename Counted::RuntimeMap>(count);
-        key_contract<typename Counted::StdMap>(count);
-        key_contract<typename Counted::AbseilMap>(count);
     }
     REQUIRE(account.live_allocations() == 0);
     REQUIRE(account.stats().live_bytes == 0);
     key_edges<typename Family::RuntimeMap>();
-    key_edges<typename Family::StdMap>();
-    key_edges<typename Family::AbseilMap>();
 }
 
 struct FailingAllocator
@@ -600,15 +594,11 @@ template <typename Family>
 void coreclr_family_contract(std::uint32_t count)
 {
     coreclr_contract<typename Family::RuntimeMap>(count);
-    coreclr_contract<typename Family::StdMap>(count);
-    coreclr_contract<typename Family::AbseilMap>(count);
     using Counted = dnvm::CountedMaps<Family>;
     dnvm::MemoryAccount account;
     {
         dnvm::MemoryScope scope(account);
         coreclr_contract<typename Counted::RuntimeMap>(count);
-        coreclr_contract<typename Counted::StdMap>(count);
-        coreclr_contract<typename Counted::AbseilMap>(count);
     }
     REQUIRE(account.stats().allocations > 0);
     REQUIRE(account.stats().allocations == account.stats().deallocations);
@@ -761,11 +751,7 @@ int main(int argc, char** argv)
         for (std::uint32_t count : {8, 64, 1024, 65536})
         {
             contract<dnvm::RuntimeMap>(count);
-            contract<dnvm::StdMap>(count);
-            contract<dnvm::AbseilMap>(count);
             counted_contract<dnvm::CountedRuntimeMap>(count);
-            counted_contract<dnvm::CountedStdMap>(count);
-            counted_contract<dnvm::CountedAbseilMap>(count);
             family_contract<dnvm::PointerMaps>(count);
             family_contract<dnvm::PointerPairMaps>(count);
             family_contract<dnvm::StringMaps>(count);

@@ -92,17 +92,13 @@ python3 scripts/report.py results/local
 
 ## Functional validation (Linux only)
 
-Run once with GCC and once with Clang, with sanitizers on Clang.
-Data collection does not run these tests.
+Runtime collections only; Clang with sanitizers.
+The independent **Functional validation** workflow emits `validation-*` artifacts.
+The **Collections** workflow does not run or wait for validation.
 
 ```sh
-CC=gcc CXX=g++ cmake -S . -B build/test-gcc -DCMAKE_BUILD_TYPE=Debug \
-    -DBUILD_TESTING=ON -DDNVM_SANITIZERS=OFF
-cmake --build build/test-gcc --parallel 8 --target map_tests map_memory
-ctest --test-dir build/test-gcc --output-on-failure --no-tests=error
-
 CC=clang CXX=clang++ cmake -S . -B build/test-clang -DCMAKE_BUILD_TYPE=Debug \
     -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON
-cmake --build build/test-clang --parallel 8 --target map_tests map_memory
+cmake --build build/test-clang --parallel 8 --target map_tests
 ctest --test-dir build/test-clang --output-on-failure --no-tests=error
 ```

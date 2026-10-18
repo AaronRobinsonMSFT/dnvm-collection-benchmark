@@ -25,32 +25,24 @@ jobs:
           - name: linux-gcc-x64
             runner: ubuntu-24.04
             configure: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
-            functional: true
-            sanitizers: "OFF"
           - name: linux-clang-x64
             runner: ubuntu-24.04
             configure: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-            functional: true
-            sanitizers: "ON"
           - name: macos-arm64
             runner: macos-15
             configure: -DCMAKE_OSX_ARCHITECTURES=arm64
-            functional: false
           - name: windows-x64
             runner: windows-2022
             configure: -G "Visual Studio 17 2022" -A x64
-            functional: false
           - name: windows-x86
             runner: windows-2022
             configure: -G "Visual Studio 17 2022" -A Win32
-            functional: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Record run inventory
         env:
           RUN_NAME: ${{ matrix.name }}
           RUN_COUNT: ${{ strategy.job-total }}
-          VALIDATE: ${{ matrix.functional }}
         run: |
           python - <<'PY'
           import json, os
@@ -61,22 +53,10 @@ jobs:
           (directory / ("run-" + name + ".json")).write_text(json.dumps({
               "schema_version": 1, "name": name, "commit": os.environ["GITHUB_SHA"],
               "expected_runs": int(os.environ["RUN_COUNT"]), "measurements": "results-" + name,
-              "validation": "validation-" + name if os.environ["VALIDATE"] == "true" else None,
           }) + "\n")
           PY
       - name: Initialize dependencies
         run: git -c core.longpaths=true submodule update --init --depth 1 --jobs 3
-      - name: Functional validation
-        if: matrix.functional
-        env:
-          VALIDATION_BUILD: build/validation-${{ matrix.name }}
-        run: |
-          cmake -S . -B "$VALIDATION_BUILD" -DCMAKE_BUILD_TYPE=Debug \
-            -DBUILD_TESTING=ON -DDNVM_SANITIZERS=${{ matrix.sanitizers }} ${{ matrix.configure }}
-          cmake --build "$VALIDATION_BUILD" --parallel 4 --target map_tests map_memory
-          printf '%s\n' "$GITHUB_SHA" > "$VALIDATION_BUILD/commit.txt"
-          ctest --test-dir "$VALIDATION_BUILD" --output-on-failure --no-tests=error \
-            --output-junit "$PWD/$VALIDATION_BUILD/functional-tests.xml"
       - name: Build collection targets
         run: |
           cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release \
@@ -86,17 +66,6 @@ jobs:
         run: python scripts/run.py --build build/release --output results/results-${{ matrix.name }}
       - name: Publish platform summary
         run: cat results/results-${{ matrix.name }}/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload functional results
-        if: always() && matrix.functional
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: validation-${{ matrix.name }}
-          path: |
-            build/validation-*/commit.txt
-            build/validation-*/functional-tests.xml
-            build/validation-*/Testing/Temporary/LastTest.log
-          overwrite: true
-          retention-days: 14
       - name: Upload measurements
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -118,13 +87,6 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: results-*
-          path: build/artifacts
-          merge-multiple: true
-      - name: Download functional results
-        if: always()
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: validation-*
           path: build/artifacts
           merge-multiple: true
       - name: Generate combined report

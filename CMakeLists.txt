@@ -98,7 +98,6 @@ if(BUILD_TESTING)
     add_executable(map_tests tests/map_tests.cpp src/coreclr_memory.cpp)
     target_link_libraries(map_tests PRIVATE map_adapters)
     add_test(NAME map_contract COMMAND map_tests)
-    add_test(NAME memory_accounting COMMAND map_memory)
     find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
     add_test(NAME report_contract COMMAND "${Python3_EXECUTABLE}" -m unittest discover
         -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*.py")

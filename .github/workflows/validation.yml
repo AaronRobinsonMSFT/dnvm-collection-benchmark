@@ -1,0 +1,44 @@
+name: Functional validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: linux-clang-x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize dependencies
+        run: git -c core.longpaths=true submodule update --init --depth 1 --jobs 3
+      - name: Validate runtime collections
+        run: |
+          cmake -S . -B build/validation -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON -DDNVM_SANITIZERS=ON \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build/validation --parallel 4 --target map_tests
+          printf '%s\n' "$GITHUB_SHA" > build/validation/commit.txt
+          ctest --test-dir build/validation --output-on-failure --no-tests=error \
+            --output-junit "$PWD/build/validation/functional-tests.xml"
+      - name: Upload functional results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-linux-clang-x64
+          path: |
+            build/validation/commit.txt
+            build/validation/functional-tests.xml
+            build/validation/Testing/Temporary/LastTest.log
+          overwrite: true
+          retention-days: 14
