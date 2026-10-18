@@ -5,14 +5,56 @@
 #include <forward_list>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
 #include "coreclr_compat.h"
+#include "dn-vector-ptr.h"
+#include "memory_accounting.h"
 
 namespace dnvm
 {
 template <typename T> struct SequenceType { using type = T; };
+
+class RuntimeVector
+{
+public:
+    static constexpr bool intrusive = false;
+    static constexpr bool supports_reserve = true;
+    static constexpr std::size_t object_bytes = sizeof(dn_vector_ptr_t);
+
+    explicit RuntimeVector(std::uint32_t capacity = 0, dn_allocator_t* allocator = nullptr)
+    {
+        dn_vector_ptr_custom_alloc_params_t params{};
+        params.allocator = allocator;
+        params.capacity = capacity;
+        if (!dn_vector_ptr_custom_init(&vector_, &params))
+            throw std::bad_alloc();
+    }
+    ~RuntimeVector() { dn_vector_ptr_dispose(&vector_); }
+    RuntimeVector(const RuntimeVector&) = delete;
+    RuntimeVector& operator=(const RuntimeVector&) = delete;
+    void append(void* value)
+    {
+        if (!dn_vector_ptr_push_back(&vector_, value))
+            throw std::bad_alloc();
+    }
+    std::uint32_t size() const { return dn_vector_ptr_size(&vector_); }
+    void* get(std::uint32_t index) const { return *dn_vector_ptr_index(&vector_, index); }
+    void set(std::uint32_t index, void* value) { *dn_vector_ptr_index(&vector_, index) = value; }
+    void clear() { dn_vector_ptr_clear(&vector_); }
+    template <typename Visitor>
+    void visit(Visitor& visitor)
+    {
+        DN_VECTOR_PTR_FOREACH_BEGIN(void*, value, &vector_)
+            visitor(value);
+        DN_VECTOR_PTR_FOREACH_END;
+    }
+
+private:
+    dn_vector_ptr_t vector_;
+};
 
 template <typename Array>
 class RuntimeArray
@@ -208,6 +250,19 @@ struct ArrayFamily
     }
 };
 
+struct VectorFamily
+{
+    using RuntimeSequence = RuntimeVector;
+    template <template <typename> class Allocator = std::allocator, typename Visitor>
+    static void implementations(Visitor visitor)
+    {
+        using Runtime = std::conditional_t<std::is_same_v<Allocator<void*>, std::allocator<void*>>,
+            RuntimeVector, CountedRuntimeAdapter<RuntimeVector>>;
+        static_assert(sizeof(Runtime) == sizeof(RuntimeVector), "Tracking changed vector object size");
+        ArrayFamily<Runtime, 8>::template implementations<Allocator>(visitor);
+    }
+};
+
 struct ArrayListFamily
 {
     using RuntimeSequence = RuntimeArrayList;
@@ -216,11 +271,15 @@ struct ArrayListFamily
     {
         using Std = StandardSequence<std::vector<void*, Allocator<void*>>, false>;
         using Deque = StandardSequence<std::deque<void*, Allocator<void*>>, false>;
+        using Abseil = StandardSequence<absl::InlinedVector<void*, 5, Allocator<void*>>, false>;
         static_assert(Std::object_bytes == sizeof(std::vector<void*>), "Tracking changed vector object size");
         static_assert(Deque::object_bytes == sizeof(std::deque<void*>), "Tracking changed deque object size");
+        static_assert(Abseil::object_bytes == sizeof(absl::InlinedVector<void*, 5>),
+                      "Tracking changed InlinedVector object size");
         visitor("runtime", SequenceType<RuntimeArrayList>{});
         visitor("std", SequenceType<Std>{});
         visitor("std_deque", SequenceType<Deque>{});
+        visitor("abseil", SequenceType<Abseil>{});
     }
 };
 
@@ -245,6 +304,10 @@ using StackArraySequence = RuntimeArray<StackSArray<void*>>;
 template <typename Visitor>
 void for_each_sequence_family(Visitor visitor)
 {
+    visitor("vector", VectorFamily{},
+        "dn_vector_ptr; STL vector; Abseil InlinedVector<void*, 8>. Borrowed pointer elements. "
+        "Native default initialization allocates 64 slots; reserved initialization requests the measured size. "
+        "Clear retains native capacity.");
     visitor("sarray", ArrayFamily<SArraySequence, 8>{},
         "SArray<void*>; STL vector; Abseil InlinedVector<void*, 8>. Borrowed pointer elements.");
     visitor("inline_sarray", ArrayFamily<InlineArraySequence, 8>{},
@@ -254,7 +317,8 @@ void for_each_sequence_family(Visitor visitor)
         "StackSArray<void*>; 256-byte native inline buffer; STL vector; "
         "Abseil InlinedVector with 256 / sizeof(void*) inline pointers.");
     visitor("arraylist", ArrayListFamily{},
-        "ArrayList; chunked pointer storage with five inline pointers; STL vector and deque. "
+        "ArrayList; chunked pointer storage with five inline pointers; STL vector and deque; "
+        "Abseil InlinedVector<void*, 5>. Sizes 5 and 6 straddle the inline-storage boundary. "
         "Index access walks chunks. Single-threaded workloads do not compare concurrent-reader guarantees.");
     visitor("slist", SListFamily{},
         "SList with head-only traits; intrusive borrowed-pointer nodes; STL forward_list uses splice_after. "
@@ -262,6 +326,16 @@ void for_each_sequence_family(Visitor visitor)
         "Native nodes use a contiguous harness-owned array; STL nodes are individually allocator-owned. "
         "All node storage is charged to memory; pool-management fields are harness bookkeeping, "
         "not collection object bytes. No Abseil alternative.");
+}
+
+template <typename Family, typename Visitor>
+void for_each_sequence_size(Visitor visitor)
+{
+    if constexpr (std::is_same_v<Family, ArrayListFamily>)
+        for (std::uint32_t size : {5, 6})
+            visitor(size);
+    for (std::uint32_t size : {8, 64, 1024, 65536})
+        visitor(size);
 }
 
 template <typename Sequence, typename Visitor>
@@ -318,6 +392,10 @@ void describe_sequences(Visitor visitor)
         "Sequential traversal uses native iterators. Indexed batches use deterministic shuffled indices. "
         "Builds include construction and destruction; clear_refill preserves each native clear policy. "
         "Only reservable families have reserved builds/lifecycles.");
+    visitor("note.realloc",
+        "Untimed native reallocation uses realloc; each successful nonzero replacement counts one allocation "
+        "and one deallocation, even in place. Requested live bytes replace the previous block; "
+        "allocator-internal transient storage is not measured.");
     visitor("scenario.index_read", "One indexed read per input element; indices are dataset hashes modulo size.");
     visitor("scenario.index_write", "One indexed write per input element using the same deterministic indices.");
     visitor("scenario.unlink_relink",

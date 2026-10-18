@@ -220,9 +220,19 @@ struct FailingAllocator
             ++self->live;
         return result;
     }
-    static void* reallocate(dn_allocator_t*, void*, std::size_t)
+    static void* reallocate(dn_allocator_t* allocator, void* pointer, std::size_t size)
     {
-        std::abort(); // The selected implementation never calls realloc.
+        if (size == 0)
+        {
+            release(allocator, pointer);
+            return nullptr;
+        }
+        if (pointer == nullptr)
+            return allocate(allocator, size);
+        auto* self = reinterpret_cast<FailingAllocator*>(allocator);
+        if (++self->calls == self->fail_at)
+            return nullptr;
+        return std::realloc(pointer, size);
     }
     static void release(dn_allocator_t* allocator, void* pointer)
     {
@@ -471,6 +481,40 @@ void memory_phases()
         dnvm::measure_lifecycle<dnvm::CountedRuntimeMap>(false, 64);
     REQUIRE(lifecycle.populated_heap_bytes == lifecycle.cleared_heap_bytes);
     REQUIRE(lifecycle.destroyed_heap_bytes == 0);
+}
+
+void native_reallocation_accounting()
+{
+    dnvm::MemoryAccount account;
+    auto* allocator = account.native_allocator();
+    auto* block = static_cast<unsigned char*>(dn_allocator_realloc(allocator, nullptr, 8));
+    REQUIRE(block != nullptr);
+    block[0] = 42;
+    block = static_cast<unsigned char*>(dn_allocator_realloc(allocator, block, 16));
+    REQUIRE(block != nullptr);
+    REQUIRE(block[0] == 42);
+    REQUIRE(account.live_allocations() == 1);
+    REQUIRE(account.stats().allocations == 2);
+    REQUIRE(account.stats().deallocations == 1);
+    REQUIRE(account.stats().allocated_bytes == 24);
+    REQUIRE(account.stats().freed_bytes == 8);
+    REQUIRE(account.stats().live_bytes == 16);
+    REQUIRE(account.stats().peak_live_bytes == 16);
+    account.begin_phase();
+    block = static_cast<unsigned char*>(dn_allocator_realloc(allocator, block, 4));
+    REQUIRE(block != nullptr);
+    REQUIRE(block[0] == 42);
+    REQUIRE(account.stats().allocations == 1);
+    REQUIRE(account.stats().deallocations == 1);
+    REQUIRE(account.stats().allocated_bytes == 4);
+    REQUIRE(account.stats().freed_bytes == 16);
+    REQUIRE(account.stats().live_bytes == 4);
+    REQUIRE(account.stats().peak_live_bytes == 16);
+    REQUIRE(dn_allocator_realloc(allocator, block, 0) == nullptr);
+    REQUIRE(account.live_allocations() == 0);
+    REQUIRE(account.stats().live_bytes == 0);
+    REQUIRE(account.stats().deallocations == 2);
+    REQUIRE(account.stats().freed_bytes == 20);
 }
 
 void memory_scope_checks()
@@ -895,6 +939,68 @@ void umap_allocation_failure()
         REQUIRE(allocator.live == 0);
     }
 }
+
+void vector_allocation_failure()
+{
+    for (std::uint32_t capacity : {0, 2})
+    {
+        FailingAllocator allocator;
+        allocator.fail_at = 1;
+        bool rejected = false;
+        try
+        {
+            dnvm::RuntimeVector sequence(capacity, &allocator.allocator);
+        }
+        catch (const std::bad_alloc&)
+        {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+        REQUIRE(allocator.live == 0);
+    }
+    FailingAllocator allocator;
+    {
+        dnvm::RuntimeVector sequence(2, &allocator.allocator);
+        const auto& values = dnvm::shared_dataset<void*>(3).hits;
+        sequence.append(values[0]);
+        sequence.append(values[1]);
+        allocator.fail_at = allocator.calls + 1;
+        bool rejected = false;
+        try
+        {
+            sequence.append(values[2]);
+        }
+        catch (const std::bad_alloc&)
+        {
+            rejected = true;
+        }
+        REQUIRE(rejected);
+        dnvm::check_sequence(sequence, {values[0], values[1]});
+        REQUIRE(allocator.live == 1);
+        allocator.fail_at = 0;
+        sequence.append(values[2]);
+        dnvm::check_sequence(sequence, values);
+    }
+    REQUIRE(allocator.live == 0);
+}
+
+void vector_memory_accounting()
+{
+    using Sequence = dnvm::CountedRuntimeAdapter<dnvm::RuntimeVector>;
+    const auto build = dnvm::measure_sequence_memory<Sequence>("build_growing", 65);
+    REQUIRE(build.object_bytes == sizeof(dn_vector_ptr_t));
+    REQUIRE(build.traffic.allocations == 2);
+    REQUIRE(build.traffic.deallocations == 2);
+    REQUIRE(build.traffic.allocated_bytes == (64 + 128) * sizeof(void*));
+    REQUIRE(build.traffic.freed_bytes == build.traffic.allocated_bytes);
+    REQUIRE(build.traffic.peak_live_bytes == 128 * sizeof(void*));
+    REQUIRE(build.after_destroy_heap_bytes == 0);
+    const auto reserved = dnvm::measure_sequence_lifecycle<Sequence>(true, 8);
+    REQUIRE(reserved.empty_heap_bytes == 8 * sizeof(void*));
+    REQUIRE(reserved.empty_heap_bytes == reserved.populated_heap_bytes);
+    REQUIRE(reserved.populated_heap_bytes == reserved.cleared_heap_bytes);
+    REQUIRE(reserved.destroyed_heap_bytes == 0);
+}
 }
 
 int main(int argc, char** argv)
@@ -913,9 +1019,13 @@ int main(int argc, char** argv)
         pointer_pair_collisions();
         dnvm::for_each_sequence_family([](const char*, auto family, const char*) {
             using Sequence = typename decltype(family)::RuntimeSequence;
-            for (std::uint32_t count : {0, 5, 8, 9, 32, 33, 64, 65, 1024})
+            for (std::uint32_t count : {0, 5, 6, 8, 9, 32, 33, 64, 65, 1024})
                 sequence_contract<Sequence>(count);
-            sequence_memory_contract<Sequence>();
+            family.template implementations<dnvm::CountingAllocator>(
+                [](const char* implementation, auto tag) {
+                    if (std::string(implementation) == "runtime")
+                        sequence_memory_contract<typename decltype(tag)::type>();
+                });
         });
         for (std::uint32_t count : {8, 64, 1024, 65536})
         {
@@ -931,6 +1041,7 @@ int main(int argc, char** argv)
         }
         memory_accounting();
         memory_phases();
+        native_reallocation_accounting();
         memory_scope_checks();
         native_memory_sizes();
         coreclr_sentinels<dnvm::CoreSHash>();
@@ -942,6 +1053,8 @@ int main(int argc, char** argv)
         coreclr_memory<dnvm::CoreSetSHash>();
         allocation_failure();
         umap_allocation_failure();
+        vector_allocation_failure();
+        vector_memory_accounting();
         key_allocation_failure<dnvm::RuntimePointerMap>();
         key_allocation_failure<dnvm::RuntimePointerPairMap>();
         key_allocation_failure<dnvm::RuntimeStringMap>();

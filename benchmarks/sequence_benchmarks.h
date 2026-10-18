@@ -98,11 +98,11 @@ void sequence_batch(benchmark::State& state, const std::string& scenario)
 void register_sequences()
 {
     dnvm::for_each_sequence_family([](const char* collection, auto family, const char*) {
+        using Family = decltype(family);
         family.implementations([collection](const char* implementation, auto tag) {
             using Sequence = typename decltype(tag)::type;
             dnvm::for_each_sequence_scenario<Sequence>([collection, implementation](const char* scenario) {
-                for (std::int64_t size : {8, 64, 1024, 65536})
-                {
+                dnvm::for_each_sequence_size<Family>([collection, implementation, scenario](std::uint32_t size) {
                     const auto name = std::string(collection) + "/" + implementation + "/" + scenario;
                     benchmark::RegisterBenchmark(name.c_str(), [scenario](benchmark::State& state) {
                         try
@@ -114,7 +114,7 @@ void register_sequences()
                             state.SkipWithError(error.what());
                         }
                     })->Arg(size)->Unit(benchmark::kNanosecond);
-                }
+                });
             });
         });
     });

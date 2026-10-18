@@ -46,6 +46,7 @@ add_library(runtime_map STATIC
     "${CONTAINERS}/dn-simdhash-string-ptr.c"
     "${CONTAINERS}/dn-simdhash-utils.c"
     "${CONTAINERS}/dn-umap.c"
+    "${CONTAINERS}/dn-vector.c"
     src/runtime_platform.c)
 target_include_directories(runtime_map PUBLIC "${CONTAINERS}" "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(runtime_map PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")

@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 
 #include "maps.h"
 
@@ -107,9 +108,42 @@ private:
         return pointer;
     }
 
-    static void* native_reallocate(dn_allocator_t*, void*, std::size_t) noexcept
+    static void* native_reallocate(dn_allocator_t* allocator, void* pointer, std::size_t bytes) noexcept
     {
-        fail("The selected runtime map unexpectedly requested realloc");
+        if (bytes == 0)
+        {
+            native_free(allocator, pointer);
+            return nullptr;
+        }
+        if (pointer == nullptr)
+            return native_allocate(allocator, bytes);
+        MemoryAccount& account = *reinterpret_cast<NativeAllocator*>(allocator)->account;
+        account.prepare(bytes);
+        auto block = account.blocks_.extract(pointer);
+        if (block.empty())
+            fail("Reallocation address was not recorded");
+        const auto previous_bytes = block.mapped();
+        const auto limit = std::numeric_limits<std::uint64_t>::max();
+        if (account.stats_.deallocations == limit || previous_bytes > limit - account.stats_.freed_bytes ||
+            previous_bytes > account.stats_.live_bytes)
+            fail("Reallocation accounting overflow");
+        void* replacement = std::realloc(pointer, bytes);
+        if (replacement == nullptr)
+        {
+            account.blocks_.insert(std::move(block));
+            return nullptr;
+        }
+        // Reuse the ledger node: bookkeeping must not allocate after realloc moves the block.
+        block.key() = replacement;
+        block.mapped() = bytes;
+        account.blocks_.insert(std::move(block));
+        ++account.stats_.allocations;
+        ++account.stats_.deallocations;
+        account.stats_.allocated_bytes += bytes;
+        account.stats_.freed_bytes += previous_bytes;
+        account.stats_.live_bytes = account.stats_.live_bytes - previous_bytes + bytes;
+        account.stats_.peak_live_bytes = std::max(account.stats_.peak_live_bytes, account.stats_.live_bytes);
+        return replacement;
     }
 
     static void native_free(dn_allocator_t* allocator, void* pointer) noexcept
@@ -199,12 +233,12 @@ public:
     bool operator!=(const CountingAllocator<U>&) const { return false; }
 };
 
-template <typename Map>
-class CountedRuntimeMapAdapter : public Map
+template <typename Collection>
+class CountedRuntimeAdapter : public Collection
 {
 public:
-    explicit CountedRuntimeMapAdapter(std::uint32_t capacity = 0)
-        : Map(capacity, MemoryScope::current().native_allocator()) {}
+    explicit CountedRuntimeAdapter(std::uint32_t capacity = 0)
+        : Collection(capacity, MemoryScope::current().native_allocator()) {}
 };
 
 template <typename Family>
@@ -214,7 +248,7 @@ struct CountedMaps
     using StdContainer = typename Family::StdMap::container_type;
     using AbseilContainer = typename Family::AbseilMap::container_type;
     using Allocator = CountingAllocator<std::pair<const Key, void*>>;
-    using RuntimeMap = CountedRuntimeMapAdapter<typename Family::RuntimeMap>;
+    using RuntimeMap = CountedRuntimeAdapter<typename Family::RuntimeMap>;
     using StdMap = StandardMap<std::unordered_map<
         Key, void*, typename StdContainer::hasher, typename StdContainer::key_equal, Allocator>,
         Family::RuntimeMap::supports_replace>;

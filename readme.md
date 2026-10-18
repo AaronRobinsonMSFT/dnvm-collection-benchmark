@@ -28,10 +28,11 @@ License notices remain in all submodules.
 | `mapshash` | `MapSHash<uint32_t, void*>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
 | `setshash` | `SetSHash<uint32_t>` | `std::unordered_multiset<uint32_t>` | `absl::btree_multiset<uint32_t>` |
 | `umap` | `dn_umap` | `std::unordered_map<void*, void*>` | `absl::flat_hash_map<void*, void*>` |
+| `vector` | `dn_vector_ptr` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
 | `sarray` | `SArray<void*>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
 | `inline_sarray` | `InlineSArray<void*, 8>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
 | `stack_sarray` | `StackSArray<void*>` | `std::vector<void*>` | `absl::InlinedVector<void*, 256 / sizeof(void*)>` |
-| `arraylist` | `ArrayList` | `std::vector<void*>`, `std::deque<void*>` | - |
+| `arraylist` | `ArrayList` | `std::vector<void*>`, `std::deque<void*>` | `absl::InlinedVector<void*, 5>` |
 | `slist` | `SList` (head-only, intrusive) | `std::forward_list<void*>` (preallocated nodes, `splice_after`) | - |
 
 | Contract | Policy |
@@ -50,8 +51,10 @@ License notices remain in all submodules.
 | CoreCLR memory | Array allocations tracked only in untimed memory/test binaries |
 | dn_umap | Separate chaining; reserve requests nonzero buckets; native rehash allocation failure is not recoverable |
 | Sequences | Borrowed pointer elements; native iteration, indexed reads/writes, builds and clear/refill where supported |
+| dn_vector_ptr | Embedded native object; default initialization allocates 64 slots; reserved initialization requests the measured size; clear retains capacity |
 | Inline arrays | Eight inline pointers; stack arrays use 256 bytes; native and Abseil growth/clear policies differ |
-| ArrayList | Five inline pointers, then growing chunks; vector/deque alternatives; no reserve or concurrency workloads |
+| ArrayList | Five inline pointers, then growing chunks; vector/deque/inline-vector alternatives; sizes 5/6 cover the inline boundary; no reserve or concurrency workloads |
+| Reallocation accounting | Untimed native realloc preserves allocator behavior; successful replacements count as one allocation plus one deallocation, including in-place changes; allocator-internal transient storage excluded |
 | SList | Preallocated nodes: contiguous native array vs. allocator-owned STL nodes; traversal and unlink/relink exclude allocation; memory includes nodes, excluding harness pool-management fields |
 
 ## Requirements and setup

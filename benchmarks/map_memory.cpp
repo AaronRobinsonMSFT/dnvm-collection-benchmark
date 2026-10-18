@@ -134,14 +134,16 @@ int main(int argc, char**)
             print_cases<typename Maps::AbseilMap>((std::string(name) + "/abseil").c_str(), first);
         });
         dnvm::for_each_sequence_family([&first](const char* collection, auto family, const char*) {
+            using Family = decltype(family);
             family.template implementations<dnvm::CountingAllocator>(
                 [collection, &first](const char* implementation, auto tag) {
                     using Sequence = typename decltype(tag)::type;
                     dnvm::for_each_sequence_scenario<Sequence>([collection, implementation, &first](const char* scenario) {
-                        for (auto size : dnvm::MemorySizes)
+                        dnvm::for_each_sequence_size<Family>([collection, implementation, scenario, &first](std::uint32_t size) {
                             print_case(std::string(collection) + "/" + implementation + "/" + scenario
                                        + "/" + std::to_string(size),
                                        dnvm::measure_sequence_memory<Sequence>(scenario, size), first);
+                        });
                     });
                 });
         });
@@ -154,14 +156,16 @@ int main(int argc, char**)
             print_lifecycles<typename Maps::AbseilMap>(name, "abseil", first);
         });
         dnvm::for_each_sequence_family([&first](const char* collection, auto family, const char*) {
+            using Family = decltype(family);
             family.template implementations<dnvm::CountingAllocator>(
                 [collection, &first](const char* implementation, auto tag) {
                     using Sequence = typename decltype(tag)::type;
                     dnvm::for_each_sequence_lifecycle<Sequence>(
                         [collection, implementation, &first](const char* mode, bool reserved) {
-                            for (auto size : dnvm::MemorySizes)
+                            dnvm::for_each_sequence_size<Family>([collection, implementation, mode, reserved, &first](std::uint32_t size) {
                                 print_lifecycle(collection, implementation, mode, size,
                                     dnvm::measure_sequence_lifecycle<Sequence>(reserved, size), first);
+                            });
                         });
                 });
         });
