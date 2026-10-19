@@ -10,7 +10,9 @@ import statistics
 import sys
 import xml.etree.ElementTree as ET
 
-from report import HTML_STYLE, comparison_inventory, html_collections, summary_notes, write_reports
+from report import (
+    HTML_STYLE, IMPLEMENTATION_NOTE, comparison_inventory, html_collections, summary_notes, write_reports,
+)
 
 
 def read_validation(directory, commit):
@@ -94,6 +96,7 @@ def html_summary(directory, result, runs, notes):
         '<h1>All-platform collection results</h1>',
         '<p>Compare implementations within each platform run, not across machines. '
         'CPU and memory measurements remain separate; no workloads or platforms are averaged together.</p>',
+        f'<p>{escape(IMPLEMENTATION_NOTE)}</p>',
     ]
     if result["errors"]:
         parts += ['<h2>Errors</h2><ul>']

@@ -218,6 +218,30 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("Linux", text)
         self.assertNotIn("duplicate keys", text)
 
+    def test_legacy_implementation_prose_is_clarified_without_changing_raw_data(self):
+        self.document["context"].update({
+            "collection.": "Native example; STL and Abseil alternatives.",
+            "note.traversal": "Sequential traversal uses native iterators.",
+            "warning.example": "The native implementation has a known limitation.",
+            "scenario.lookup_hit": "Look up every key using native hashes.",
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            original = json.dumps(self.document)
+            (directory / "benchmarks.json").write_text(original)
+            (directory / "metadata.json").write_text(json.dumps(self.metadata))
+            REPORT.write_reports(directory)
+            for filename in ("summary.md", "summary.html"):
+                text = (directory / filename).read_text()
+                self.assertNotRegex(text.lower(), r"\bnative\b")
+                self.assertIn("Runtime example; STL and Abseil alternatives.", text)
+                self.assertIn("each implementation's iterators" if filename.endswith(".md")
+                              else "each implementation&#x27;s iterators", text)
+                self.assertIn("runtime hashes", text)
+                self.assertIn("runtime = the .NET runtime implementation", text)
+                self.assertIn("std/std_deque = STL; abseil = Abseil", text)
+            self.assertEqual((directory / "benchmarks.json").read_text(), original)
+
     def test_summary_omits_repository_inventory_but_preserves_metadata(self):
         self.metadata.update({"project_status": " M checkout-file.cpp", "project_commit": "abc"})
         with tempfile.TemporaryDirectory() as temporary:

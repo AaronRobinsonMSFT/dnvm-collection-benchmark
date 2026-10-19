@@ -306,24 +306,24 @@ void for_each_sequence_family(Visitor visitor)
 {
     visitor("vector", VectorFamily{},
         "dn_vector_ptr; STL vector; Abseil InlinedVector<void*, 8>. Borrowed pointer elements. "
-        "Native default initialization allocates 64 slots; reserved initialization requests the measured size. "
-        "Clear retains native capacity.");
+        "dn_vector_ptr default initialization allocates 64 slots; reserved initialization requests the measured size. "
+        "Clear retains dn_vector_ptr capacity.");
     visitor("sarray", ArrayFamily<SArraySequence, 8>{},
-        "SArray<void*>; STL vector; Abseil InlinedVector<void*, 8>. Borrowed pointer elements.");
+        "CoreCLR SArray<void*>; STL vector; Abseil InlinedVector<void*, 8>. Borrowed pointer elements.");
     visitor("inline_sarray", ArrayFamily<InlineArraySequence, 8>{},
-        "InlineSArray<void*, 8>; STL vector; Abseil InlinedVector<void*, 8>. "
+        "CoreCLR InlineSArray<void*, 8>; STL vector; Abseil InlinedVector<void*, 8>. "
         "Eight inline pointers; growth/clear policies differ.");
     visitor("stack_sarray", ArrayFamily<StackArraySequence, STACK_ALLOC / sizeof(void*)>{},
-        "StackSArray<void*>; 256-byte native inline buffer; STL vector; "
+        "CoreCLR StackSArray<void*>; 256-byte inline buffer; STL vector; "
         "Abseil InlinedVector with 256 / sizeof(void*) inline pointers.");
     visitor("arraylist", ArrayListFamily{},
-        "ArrayList; chunked pointer storage with five inline pointers; STL vector and deque; "
+        "CoreCLR ArrayList; chunked pointer storage with five inline pointers; STL vector and deque; "
         "Abseil InlinedVector<void*, 5>. Sizes 5 and 6 straddle the inline-storage boundary. "
         "Index access walks chunks. Single-threaded workloads do not compare concurrent-reader guarantees.");
     visitor("slist", SListFamily{},
-        "SList with head-only traits; intrusive borrowed-pointer nodes; STL forward_list uses splice_after. "
+        "CoreCLR SList with head-only traits; intrusive borrowed-pointer nodes; STL forward_list uses splice_after. "
         "Both reuse preallocated nodes: construction/destruction excluded from CPU timing. "
-        "Native nodes use a contiguous harness-owned array; STL nodes are individually allocator-owned. "
+        "SList nodes use a contiguous harness-owned array; STL nodes are individually allocator-owned. "
         "All node storage is charged to memory; pool-management fields are harness bookkeeping, "
         "not collection object bytes. No Abseil alternative.");
 }
@@ -389,11 +389,11 @@ void describe_sequences(Visitor visitor)
     });
     visitor("note.sequences",
         "Sequence sizes count pointer elements/nodes; ns/key and B/key mean ns/element and B/element. "
-        "Sequential traversal uses native iterators. Indexed batches use deterministic shuffled indices. "
-        "Builds include construction and destruction; clear_refill preserves each native clear policy. "
+        "Sequential traversal uses each implementation's traversal API. Indexed batches use deterministic shuffled indices. "
+        "Builds include construction and destruction; clear_refill preserves each implementation's clear policy. "
         "Only reservable families have reserved builds/lifecycles.");
     visitor("note.realloc",
-        "Untimed native reallocation uses realloc; each successful nonzero replacement counts one allocation "
+        "Untimed dn_vector_ptr reallocation uses realloc; each successful nonzero replacement counts one allocation "
         "and one deallocation, even in place. Requested live bytes replace the previous block; "
         "allocator-internal transient storage is not measured.");
     visitor("scenario.index_read", "One indexed read per input element; indices are dataset hashes modulo size.");

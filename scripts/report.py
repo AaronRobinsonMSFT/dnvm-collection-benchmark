@@ -8,6 +8,7 @@ import io
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 
@@ -25,6 +26,17 @@ HTML_STYLE = (
     "table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 12px;"
     "border-bottom:1px solid #d0d7de}"
 )
+IMPLEMENTATION_NOTE = (
+    "Legend: runtime = the .NET runtime implementation named in the collection description; "
+    "std/std_deque = STL; abseil = Abseil. These are separate implementations, not aliases."
+)
+
+
+def display_description(text):
+    # Historical producer text stays unchanged in raw artifacts.
+    text = text.replace("native iterators", "each implementation's iterators")
+    return re.sub(r"\bnative\b", lambda match: "Runtime" if match[0][0].isupper() else "runtime",
+                  text, flags=re.IGNORECASE)
 
 
 def build_settings(path):
@@ -356,6 +368,7 @@ def summary_notes(rows, context, metadata, memory):
     notes = [
         "Compare implementations within this run, not across machines. "
         "These measurements inform, but do not decide, whether to keep, improve, or replace a collection.",
+        IMPLEMENTATION_NOTE,
         f"Compiler: {context['compiler']}; STL: {context['stdlib']}; "
         f"target: {context['system']} {context['architecture']} "
         f"({context['pointer_bits']}-bit); runtime SIMD: {context['runtime_simd']}.",
@@ -373,11 +386,11 @@ def summary_notes(rows, context, metadata, memory):
         notes.append("Functional validation was not run for these measurements.")
     for key, value in context.items():
         if key.startswith("note."):
-            notes.append(value)
+            notes.append(display_description(value))
         elif key.startswith("warning."):
-            notes.append("Warning: " + value)
+            notes.append("Warning: " + display_description(value))
         elif key.startswith("scenario."):
-            notes.append(key.removeprefix("scenario.") + ": " + value)
+            notes.append(key.removeprefix("scenario.") + ": " + display_description(value))
     if any(row["cv_percent"] > 5 for row in rows):
         notes.append("Noise warning: some measurements have CV above 5%; inspect tooltips and raw samples.")
     for warning in metadata.get("measurement_warnings", []):
@@ -402,7 +415,7 @@ def markdown(rows, context, metadata, memory=None):
         lines += [f"## {label}", ""]
         description = context.get("collection." + collection)
         if description:
-            lines += [description, ""]
+            lines += [display_description(description), ""]
         lines += [
             f"Baseline for tooltip speedups: `{baseline_for(collection, implementations, context)}`.",
             "",
@@ -428,7 +441,7 @@ def html_collections(context, metadata, graphs, prefix=""):
     for index, (collection, graph) in enumerate(graphs, 1):
         parts += [
             f'<section id="{escape(prefix)}collection-{index}"><h2>{escape(collection or "Collections")}</h2>',
-            f"<p>{escape(context.get('collection.' + collection, ''))}</p>",
+            f"<p>{escape(display_description(context.get('collection.' + collection, '')))}</p>",
             "<p>Baseline for tooltip speedups: "
             f"<code>{escape(baseline_for(collection, inventory[collection], context))}</code>.</p>",
             graph, "</section>",

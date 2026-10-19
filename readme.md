@@ -1,6 +1,6 @@
-# .NET native collection benchmarks
+# .NET runtime collection benchmarks
 
-Measure whether the custom native collections in `dotnet/runtime` justify their
+Measure whether the collection implementations in `dotnet/runtime` justify their
 performance, complexity, and ergonomics compared with
 supported C++ implementations. The runtime collection is the subject and source
 of truth: its capabilities and assumptions determine tests and scenarios.
@@ -49,13 +49,13 @@ License notices remain in all submodules.
 | CoreCLR removal | `shash` erases all matches; default `mapshash`/`setshash` have no removal |
 | CoreCLR alternatives | STL hash containers vs. Abseil B-trees; B-trees have no reserve |
 | CoreCLR memory | Array allocations tracked only in untimed memory/test binaries |
-| dn_umap | Separate chaining; reserve requests nonzero buckets; native rehash allocation failure is not recoverable |
-| Sequences | Borrowed pointer elements; native iteration, indexed reads/writes, builds and clear/refill where supported |
-| dn_vector_ptr | Embedded native object; default initialization allocates 64 slots; reserved initialization requests the measured size; clear retains capacity |
-| Inline arrays | Eight inline pointers; stack arrays use 256 bytes; native and Abseil growth/clear policies differ |
+| dn_umap | Separate chaining; reserve requests nonzero buckets; rehash allocation failure is not recoverable |
+| Sequences | Borrowed pointer elements; each implementation's traversal API, indexed reads/writes, builds and clear/refill where supported |
+| dn_vector_ptr | Embedded dn_vector_ptr_t object; default initialization allocates 64 slots; reserved initialization requests the measured size; clear retains capacity |
+| Inline arrays | Eight inline pointers; stack arrays use 256 bytes; CoreCLR and Abseil growth/clear policies differ |
 | ArrayList | Five inline pointers, then growing chunks; vector/deque/inline-vector alternatives; sizes 5/6 cover the inline boundary; no reserve or concurrency workloads |
-| Reallocation accounting | Untimed native realloc preserves allocator behavior; successful replacements count as one allocation plus one deallocation, including in-place changes; allocator-internal transient storage excluded |
-| SList | Preallocated nodes: contiguous native array vs. allocator-owned STL nodes; traversal and unlink/relink exclude allocation; memory includes nodes, excluding harness pool-management fields |
+| Reallocation accounting | Untimed dn_vector_ptr realloc preserves allocator behavior; successful replacements count as one allocation plus one deallocation, including in-place changes; allocator-internal transient storage excluded |
+| SList | Preallocated nodes: contiguous SList node array vs. allocator-owned STL nodes; traversal and unlink/relink exclude allocation; memory includes nodes, excluding harness pool-management fields |
 
 ## Requirements and setup
 
@@ -110,6 +110,9 @@ browser for hover tooltips with exact values, CPU speedups, and variability.
 The collection index links to the beginning of each collection's graphs.
 Detailed measurements and lifecycle checkpoints remain in the CSV/JSON exports.
 Keep the adjacent `graphs/` directory with the report when viewing or copying it.
+The `runtime` series is the .NET runtime implementation named in each collection
+description; `std`/`std_deque` are STL, and `abseil` is Abseil. `dn_vector_ptr`
+is the C vector, distinct from CoreCLR's SArray family.
 
 To regenerate reports without collecting new data:
 
@@ -128,6 +131,7 @@ findings and action items. Its `commit` must match; `findings` entries contain
 `finding` and `detail`, and `action_items` entries contain `action` and `detail`.
 An optional `methodology` string describes the analysis. Conclusions are input
 data, not collection-specific rules in the report generator.
+Use concrete collection names in findings rather than the ambiguous label "native".
 
 ## Functional validation (Linux only)
 

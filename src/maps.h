@@ -182,17 +182,17 @@ void for_each_family(Visitor visitor)
         "dn_simdhash_string_ptr; borrowed NUL-terminated keys; content equality; STL/Abseil hash string views. "
         "0/32/64-byte prefixes plus decimal IDs; separate equal-content hit buffers.");
     visitor("shash", CoreClrFamily<CoreSHash>{},
-        "SHash<MapSHashTraits<uint32_t, void*>>; duplicate keys retained; removal erases all matches. "
+        "CoreCLR SHash<MapSHashTraits<uint32_t, void*>>; duplicate keys retained; removal erases all matches. "
         "Keys 0 and UINT32_MAX are reserved. STL unordered_multimap; Abseil btree_multimap.");
     visitor("mapshash", CoreClrFamily<CoreMapSHash>{},
-        "MapSHash<uint32_t, void*> with default no-remove traits; duplicate keys retained; "
+        "CoreCLR MapSHash<uint32_t, void*> with default no-remove traits; duplicate keys retained; "
         "key 0 is reserved. STL unordered_multimap; Abseil btree_multimap.");
     visitor("setshash", CoreClrFamily<CoreSetSHash>{},
-        "SetSHash<uint32_t> with default no-remove traits; duplicate keys retained; key 0 is reserved. "
+        "CoreCLR SetSHash<uint32_t> with default no-remove traits; duplicate keys retained; key 0 is reserved. "
         "STL unordered_multiset; Abseil btree_multiset. No mapped values.");
     visitor("umap", UMapMaps{},
-        "dn_umap; separate-chaining hash table; borrowed pointer keys/values; native direct hash. "
-        "Reserve requests buckets. Replacement checks presence before native insert_or_assign.");
+        "dn_umap; separate-chaining hash table; borrowed pointer keys/values; default direct hash. "
+        "Reserve requests buckets. Replacement checks presence before dn_umap_insert_or_assign.");
 }
 
 template <typename Visitor>
@@ -212,16 +212,16 @@ void describe_maps(Visitor visitor)
     visitor("note.pointer_datasets",
         "Pointer datasets use pointer-sized slots; pair second components use deterministic seeded indices. "
         "Hit/miss sets are disjoint. Before population, pair hit and miss sets each require at least 90% "
-        "distinct native full hashes and no hash shared by more than max(4, size/100) keys. "
+        "distinct dn_simdhash_ptrpair_ptr full hashes and no hash shared by more than max(4, size/100) keys. "
         "Pointer addresses and actual hashes vary by process. Older pointer/pair results used a different layout.");
     visitor("note.memory",
         "Memory is collected separately from timing. Requested bytes exclude dataset storage, borrowed "
         "pointees, tracking bookkeeping, allocator metadata/rounding and process RSS.");
     visitor("note.coreclr",
         "SHash headers and iterators are compiled unchanged with standalone type/contract declarations; "
-        "VM contracts/DAC infrastructure are not included. Native Add retains duplicates. "
+        "VM contracts/DAC infrastructure are not included. CoreCLR SHash Add retains duplicates. "
         "STL alternatives are hash containers; Abseil alternatives are B-trees and have no reserve operation. "
-        "SHash reserve converts element count to slots using the native density policy. "
+        "SHash reserve converts element count to slots using the SHash density policy. "
         "Replacement/erase timings use unique-key populations; key-specific lookup among duplicates is unordered.");
     visitor("scenario.duplicate_build",
         "Size is the distinct-key count. Each iteration builds two entries per key, then destroys the collection; "
@@ -231,7 +231,7 @@ void describe_maps(Visitor visitor)
         "Other specializations share its core but were not independently reproduced. "
         "The separate reproducer is not run during collection.");
     visitor("warning.umap_rehash",
-        "Native dn_umap rehash does not preserve its bucket array on allocation failure. "
+        "dn_umap rehash does not preserve its bucket array on allocation failure. "
         "Such failure is fatal, not a recoverable benchmark result.");
 }
 }
