@@ -242,6 +242,24 @@ class ReportTests(unittest.TestCase):
                 self.assertIn("std/std_deque = STL; abseil = Abseil", text)
             self.assertEqual((directory / "benchmarks.json").read_text(), original)
 
+    def test_scenario_table_uses_producer_descriptions_before_navigation(self):
+        self.document["context"].update({
+            "scenario.lookup_hit": "Find an existing key.",
+            "scenario.future<&test": "Producer-defined <operation> & behavior.",
+            "note.scenarios": "Only supported scenarios are measured.",
+        })
+        rows = REPORT.summarize(self.document, self.metadata)
+        text = REPORT.html_summary(rows, self.document["context"], self.metadata, None, [])
+        self.assertLess(text.index(REPORT.IMPLEMENTATION_NOTE), text.index("Scenarios measured"))
+        self.assertLess(text.index("Scenarios measured"), text.index("<nav "))
+        self.assertIn("future&lt;&amp;test", text)
+        self.assertIn("Producer-defined &lt;operation&gt; &amp; behavior.", text)
+        self.assertEqual(text.count("Find an existing key."), 1)
+        self.assertEqual(text.count("Only supported scenarios are measured."), 1)
+        markdown = REPORT.markdown(rows, self.document["context"], self.metadata)
+        self.assertIn("| lookup_hit | Find an existing key. |", markdown)
+        self.assertNotIn("lookup_hit: Find", markdown)
+
     def test_summary_omits_repository_inventory_but_preserves_metadata(self):
         self.metadata.update({"project_status": " M checkout-file.cpp", "project_commit": "abc"})
         with tempfile.TemporaryDirectory() as temporary:

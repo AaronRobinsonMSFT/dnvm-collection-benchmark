@@ -154,6 +154,26 @@ class CombinedReportTests(unittest.TestCase):
             self.assertEqual(len((directory / "summary.csv").read_text().splitlines()), 16)
             self.assertEqual(len((directory / "memory-summary.csv").read_text().splitlines()), 16)
 
+    def test_scenarios_are_merged_before_combined_graph_index(self):
+        platforms = {
+            name: {"context": context}
+            for name, context in (
+                ("first", {"scenario.shared": "Shared description.",
+                           "scenario.first": "First-only description."}),
+                ("second", {"scenario.shared": "Shared description.",
+                            "scenario.second": "Second-only <description>."}),
+            )
+        }
+        descriptions = CI.html_scenarios([item["context"] for item in platforms.values()])
+        self.assertEqual(descriptions.count("Shared description."), 1)
+        self.assertIn("First-only description.", descriptions)
+        self.assertIn("Second-only &lt;description&gt;.", descriptions)
+        with mock.patch.object(CI, "html_scenarios", return_value=descriptions):
+            result = {"platforms": [], "errors": [], "functional": {}}
+            text = CI.html_summary(Path("."), result, {}, None)
+        self.assertLess(text.index(CI.IMPLEMENTATION_NOTE), text.index("Scenarios measured"))
+        self.assertLess(text.index("Scenarios measured"), text.index("Jump to graphs"))
+
     def test_html_keeps_all_graphs_hover_values_and_collection_links(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

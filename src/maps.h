@@ -223,9 +223,41 @@ void describe_maps(Visitor visitor)
         "STL alternatives are hash containers; Abseil alternatives are B-trees and have no reserve operation. "
         "SHash reserve converts element count to slots using the SHash density policy. "
         "Replacement/erase timings use unique-key populations; key-specific lookup among duplicates is unordered.");
+    visitor("scenario.lookup_hit",
+        "Look up every key in a populated map/set using queries that are all present. "
+        "Initial population is excluded from timing.");
+    visitor("scenario.lookup_miss",
+        "Look up keys that are all absent from a populated map/set. Initial population is excluded from timing.");
+    visitor("scenario.build_growing",
+        "Construct a collection, insert or append all entries without requesting capacity in advance, "
+        "then destroy it. Timing includes construction, growth, and destruction.");
+    visitor("scenario.build_reserved",
+        "Construct a collection with capacity requested for the full dataset, populate it, then destroy it. "
+        "Timing includes the capacity request, population, and destruction.");
+    visitor("scenario.duplicate",
+        "Attempt to insert every existing key again into a collection that rejects duplicates. "
+        "Measures duplicate detection without adding entries; initial population is excluded from timing.");
     visitor("scenario.duplicate_build",
-        "Size is the distinct-key count. Each iteration builds two entries per key, then destroys the collection; "
-        "CPU ns/key includes both insertions and destruction. Memory footprint is per distinct key, not per entry.");
+        "Construct a duplicate-preserving map/set, insert the dataset twice so each key has two entries, "
+        "then destroy it. Timing includes construction, both insertion passes, and destruction. "
+        "Size and memory footprint are per distinct key, not per entry.");
+    visitor("scenario.replace",
+        "Find each existing map key and replace its mapped pointer value. Keys and entry count remain unchanged; "
+        "initial population is excluded from timing.");
+    visitor("scenario.erase_insert",
+        "Remove each existing key and immediately insert it again. Measures removal and reinsertion together; "
+        "initial population is excluded from timing.");
+    visitor("scenario.iterate",
+        "Visit every entry or element in a populated collection using that implementation's traversal API. "
+        "Construction and population are excluded from timing.");
+    visitor("scenario.clear_refill",
+        "Clear a populated collection and refill it with the same dataset. Measures clearing and refilling "
+        "together, including any resulting allocations; each implementation retains or releases storage "
+        "according to its own clear behavior.");
+    visitor("note.scenarios",
+        "Not every collection supports every scenario. CPU timing and memory accounting are collected separately. "
+        "Sequence elements and map pointer values are borrowed; these workloads do not construct or destroy "
+        "the pointed-to objects.");
     visitor("warning.duplicate_after_deletion",
         "Known functional defect: u32 can insert a duplicate key after deletion. "
         "Other specializations share its core but were not independently reproduced. "

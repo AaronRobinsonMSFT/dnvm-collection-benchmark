@@ -108,6 +108,7 @@ summaries, raw data, and logs are in the same output directory.
 The summary shows per-collection CPU and memory graphs. Open `summary.html` in a
 browser for hover tooltips with exact values, CPU speedups, and variability.
 The collection index links to the beginning of each collection's graphs.
+The scenario table above the index describes the workloads using producer-supplied metadata.
 Detailed measurements and lifecycle checkpoints remain in the CSV/JSON exports.
 Keep the adjacent `graphs/` directory with the report when viewing or copying it.
 The `runtime` series is the .NET runtime implementation named in each collection

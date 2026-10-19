@@ -11,7 +11,8 @@ import sys
 import xml.etree.ElementTree as ET
 
 from report import (
-    HTML_STYLE, IMPLEMENTATION_NOTE, comparison_inventory, html_collections, summary_notes, write_reports,
+    HTML_STYLE, IMPLEMENTATION_NOTE, comparison_inventory, html_collections, html_scenarios,
+    summary_notes, write_reports,
 )
 
 
@@ -97,6 +98,7 @@ def html_summary(directory, result, runs, notes):
         '<p>Compare implementations within each platform run, not across machines. '
         'CPU and memory measurements remain separate; no workloads or platforms are averaged together.</p>',
         f'<p>{escape(IMPLEMENTATION_NOTE)}</p>',
+        html_scenarios([platform["context"] for platform in platforms.values()]),
     ]
     if result["errors"]:
         parts += ['<h2>Errors</h2><ul>']

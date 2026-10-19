@@ -39,6 +39,35 @@ def display_description(text):
                   text, flags=re.IGNORECASE)
 
 
+def scenario_descriptions(contexts):
+    descriptions = {}
+    for context in contexts:
+        for key, value in context.items():
+            if key.startswith("scenario."):
+                entries = descriptions.setdefault(key.removeprefix("scenario."), [])
+                text = display_description(value)
+                if text not in entries:
+                    entries.append(text)
+    return {name: " ".join(entries) for name, entries in descriptions.items()}
+
+
+def html_scenarios(contexts):
+    descriptions = scenario_descriptions(contexts)
+    if not descriptions:
+        return ""
+    parts = [
+        "<section><h2>Scenarios measured</h2>",
+        "<table><thead><tr><th>Scenario</th><th>Description</th></tr></thead><tbody>",
+    ]
+    parts += [f"<tr><td><code>{escape(name)}</code></td><td>{escape(text)}</td></tr>"
+              for name, text in descriptions.items()]
+    parts.append("</tbody></table>")
+    for note in dict.fromkeys(display_description(context["note.scenarios"])
+                              for context in contexts if "note.scenarios" in context):
+        parts.append(f"<p>{escape(note)}</p>")
+    return "\n".join(parts + ["</section>"])
+
+
 def build_settings(path):
     settings = {}
     names = {
@@ -385,12 +414,10 @@ def summary_notes(rows, context, metadata, memory):
     if metadata.get("functional_tests") == "not_run":
         notes.append("Functional validation was not run for these measurements.")
     for key, value in context.items():
-        if key.startswith("note."):
+        if key.startswith("note.") and key != "note.scenarios":
             notes.append(display_description(value))
         elif key.startswith("warning."):
             notes.append("Warning: " + display_description(value))
-        elif key.startswith("scenario."):
-            notes.append(key.removeprefix("scenario.") + ": " + display_description(value))
     if any(row["cv_percent"] > 5 for row in rows):
         notes.append("Noise warning: some measurements have CV above 5%; inspect tooltips and raw samples.")
     for warning in metadata.get("measurement_warnings", []):
@@ -407,7 +434,19 @@ def markdown(rows, context, metadata, memory=None):
         "Markdown image previews may not expose tooltips.",
         "",
     ]
-    for note in summary_notes(rows, context, metadata, memory):
+    notes = summary_notes(rows, context, metadata, memory)
+    for note in notes[:2]:
+        lines += [note, ""]
+    descriptions = scenario_descriptions([context])
+    if descriptions:
+        lines += ["## Scenarios measured", "", "| Scenario | Description |", "| --- | --- |"]
+        for name, text in descriptions.items():
+            lines.append("| " + name.replace("|", "&#124;") + " | "
+                         + text.replace("|", "&#124;").replace("\n", " ") + " |")
+        lines.append("")
+        if "note.scenarios" in context:
+            lines += [display_description(context["note.scenarios"]), ""]
+    for note in notes[2:]:
         lines += [note, ""]
     inventory = comparison_inventory(metadata["expected_benchmarks"])
     for index, (collection, implementations) in enumerate(inventory.items(), 1):
@@ -457,6 +496,8 @@ def html_summary(rows, context, metadata, memory, graphs):
         '<title>Collection benchmark results</title>',
         f'<style>{HTML_STYLE}</style></head><body>',
         '<h1>Collection benchmark results</h1>',
+        f"<p>{escape(IMPLEMENTATION_NOTE)}</p>",
+        html_scenarios([context]),
         '<nav aria-labelledby="collection-index"><h2 id="collection-index">Collections</h2>',
         '<table><thead><tr><th>Collection</th><th>Implementations</th></tr></thead><tbody>',
     ]
@@ -470,7 +511,8 @@ def html_summary(rows, context, metadata, memory, graphs):
         'points. CPU tooltips include speedup versus baseline (above 1x is faster) and CV '
         '(sample standard deviation / mean).</p>',
     ]
-    parts += [f"<p>{escape(note)}</p>" for note in summary_notes(rows, context, metadata, memory)]
+    parts += [f"<p>{escape(note)}</p>" for note in summary_notes(rows, context, metadata, memory)
+              if note != IMPLEMENTATION_NOTE]
     parts.append(html_collections(context, metadata, graphs))
     parts += [
         '<p>CPU data: <a href="summary.csv">CSV</a>, <a href="summary.json">JSON</a>.</p>',

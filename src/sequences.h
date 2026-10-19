@@ -396,11 +396,15 @@ void describe_sequences(Visitor visitor)
         "Untimed dn_vector_ptr reallocation uses realloc; each successful nonzero replacement counts one allocation "
         "and one deallocation, even in place. Requested live bytes replace the previous block; "
         "allocator-internal transient storage is not measured.");
-    visitor("scenario.index_read", "One indexed read per input element; indices are dataset hashes modulo size.");
-    visitor("scenario.index_write", "One indexed write per input element using the same deterministic indices.");
+    visitor("scenario.index_read",
+        "Read pointer elements from a populated sequence at deterministic, shuffled indices. "
+        "Indices may repeat; construction and population are excluded from timing.");
+    visitor("scenario.index_write",
+        "Write replacement pointer values into a populated sequence at the same deterministic indices used "
+        "for indexed reads. Indices may repeat; construction and population are excluded from timing.");
     visitor("scenario.unlink_relink",
-        "Move every node head-first to a spare list, then move all nodes back; no allocation or deallocation. "
-        "Time is per node and includes both transfers.");
+        "Move all preallocated list nodes to a spare list, then move them back. Measures both transfers "
+        "without allocating or freeing nodes; node construction and destruction are excluded from timing.");
 }
 }
 
