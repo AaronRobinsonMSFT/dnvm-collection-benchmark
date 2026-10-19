@@ -169,10 +169,44 @@ class CombinedReportTests(unittest.TestCase):
         self.assertIn("First-only description.", descriptions)
         self.assertIn("Second-only &lt;description&gt;.", descriptions)
         with mock.patch.object(CI, "html_scenarios", return_value=descriptions):
-            result = {"platforms": [], "errors": [], "functional": {}}
+            result = {"commit": self.commit, "platforms": [], "errors": [], "functional": {}}
             text = CI.html_summary(Path("."), result, {}, None)
         self.assertLess(text.index(CI.IMPLEMENTATION_NOTE), text.index("Scenarios measured"))
         self.assertLess(text.index("Scenarios measured"), text.index("Jump to graphs"))
+
+    def test_pages_site_keeps_report_links_and_measurement_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "artifacts"
+            directory.mkdir()
+            self.populate(directory, platforms={"macos-arm64": PLATFORMS["macos-arm64"]})
+            (directory / "private-build.log").write_text("Not a website asset")
+            result = CI.combine(directory, self.commit)
+            result["platforms"][0]["metadata"]["started_utc"] = "2026-10-19T20:26:22+00:00"
+            runs = {"macos-arm64": {"measurements": "results-macos-arm64"}}
+            (directory / "summary.html").write_text(CI.html_summary(directory, result, runs, None))
+            site = Path(temporary) / "site"
+            CI.stage_site(directory, site, result)
+            text = (site / "index.html").read_text()
+            self.assertIn("Measurement commit: <code>" + self.commit, text)
+            self.assertIn("Measurement dates (UTC): 2026-10-19", text)
+            self.assertEqual(text, (site / "summary.html").read_text())
+            self.assertFalse((site / "private-build.log").exists())
+            parser = SummaryLinks()
+            parser.feed(text)
+            for link in parser.links:
+                if not link.startswith("#"):
+                    self.assertTrue((site / link).is_file(), link)
+            for link in ("summary.json", "results-macos-arm64/memory-summary.csv",
+                         "results-macos-arm64/graphs/collection-1.svg"):
+                self.assertEqual((site / link).read_bytes(), (directory / link).read_bytes())
+            with self.assertRaises(FileExistsError):
+                CI.stage_site(directory, site, result)
+            with self.assertRaisesRegex(ValueError, "complete"):
+                CI.stage_site(directory, Path(temporary) / "failed-site",
+                              {**result, "errors": ["Missing platform"]})
+            self.assertFalse((Path(temporary) / "failed-site").exists())
+            with self.assertRaisesRegex(ValueError, "outside"):
+                CI.stage_site(directory, directory / "site", result)
 
     def test_html_keeps_all_graphs_hover_values_and_collection_links(self):
         with tempfile.TemporaryDirectory() as temporary:

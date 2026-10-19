@@ -102,11 +102,17 @@ Build each platform, collect CPU and memory measurements, then generate reports.
 Checkout snapshots are saved as `dependencies-<platform>.json` before building.
 Open its root `summary.html` for all-platform graphs with one collection row
 linking to each platform's charts. Separate platform reports remain available.
+Successful `main` Collections runs publish the report to
+[GitHub Pages](https://aaronrobinsonmsft.github.io/dnvm-collection-benchmark/).
+The page identifies the measurement commit and UTC dates. Failed collections
+and pull requests do not replace the published report. Raw data and build logs
+remain in the workflow artifact; the site includes reports, graphs, and linked exports.
 
 **Local:** Open `results/local/summary.md` in a Markdown viewer. CSV/JSON
 summaries, raw data, and logs are in the same output directory.
 The summary shows per-collection CPU and memory graphs. Open `summary.html` in a
-browser for hover tooltips with exact values, CPU speedups, and variability.
+browser for hover tooltips with measured values, CPU speedups, and variability.
+Graph measurements use at most four significant digits; CSV/JSON exports retain full precision.
 The collection index links to the beginning of each collection's graphs.
 The scenario table above the index describes the workloads using producer-supplied metadata.
 Detailed measurements and lifecycle checkpoints remain in the CSV/JSON exports.
@@ -125,6 +131,12 @@ To regenerate a downloaded combined artifact:
 
 ```sh
 python3 scripts/ci_report.py results/collections-RUN --commit COMMIT
+```
+
+To stage that report for Pages in a new directory:
+
+```sh
+python3 scripts/ci_report.py results/collections-RUN --commit COMMIT --site build/pages
 ```
 
 Optional `executive-summary.json` input in the artifact directory adds run-specific

@@ -129,8 +129,8 @@ class ReportTests(unittest.TestCase):
             tooltips = graph.findall(".//{http://www.w3.org/2000/svg}rect[@data-tooltip]")
             self.assertEqual(len(tooltips), 1)
             tooltip = "".join(tooltips[0].itertext())
-            self.assertIn("std: 20.0; 0.500x vs runtime; CV 0.00%", tooltip)
-            self.assertIn("abseil: 5.0; 2.000x vs runtime", tooltip)
+            self.assertIn("std: 20; 0.5x vs runtime; CV 0%", tooltip)
+            self.assertIn("abseil: 5; 2x vs runtime", tooltip)
 
     def test_graph_tooltips_keep_ties_variability_and_all_sizes(self):
         rows = REPORT.summarize(self.document, self.metadata)
@@ -153,8 +153,30 @@ class ReportTests(unittest.TestCase):
         self.assertTrue(tooltips[0].startswith("iterate: 8 elements"))
         self.assertTrue(tooltips[1].startswith("lookup_hit: 8 elements"))
         self.assertTrue(tooltips[2].startswith("lookup_hit: 64 elements"))
-        self.assertIn("runtime: 10; 1.000x vs runtime; CV 5.01%", tooltips[2])
-        self.assertIn("std: 10; 1.000x vs runtime; CV 5.00%", tooltips[2])
+        self.assertIn("runtime: 10; 1x vs runtime; CV 5.01%", tooltips[2])
+        self.assertIn("std: 10; 1x vs runtime; CV 5%", tooltips[2])
+
+    def test_graph_tooltips_round_measurements_without_changing_data(self):
+        rows = REPORT.summarize(self.document, self.metadata)
+        rows[0].update({
+            "median_ns_per_key": 12345.6789,
+            "speedup_vs_baseline": 12.3456789,
+            "cv_percent": 0.00123456789,
+        })
+        original = copy.deepcopy(rows)
+        memory = [{**row, "footprint_bytes_per_key": 0.123456789,
+                   "footprint_bytes": 1234567} for row in rows]
+        graph = ET.fromstring(REPORT.collection_graph(
+            "", rows, IMPLEMENTATIONS,
+            {name: ("#0072b2", "none") for name in IMPLEMENTATIONS}, memory))
+        tooltips = "\n".join("".join(element.itertext()) for element in graph.findall(
+            ".//{http://www.w3.org/2000/svg}title"))
+        self.assertIn("runtime: 1.235e+04; 12.35x vs runtime; CV 0.001235%", tooltips)
+        self.assertIn("0.1235; total footprint 1.235e+06 bytes", tooltips)
+        self.assertIn("1.235e+04 CPU median", tooltips)
+        self.assertEqual(rows, original)
+        point = graph.find(".//{http://www.w3.org/2000/svg}circle")
+        self.assertEqual(float(point.attrib["data-value"]), 12345.6789)
 
     def test_html_index_has_one_link_per_collection_regardless_of_scenarios_or_metrics(self):
         class NavigationParser(HTMLParser):

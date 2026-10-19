@@ -6,6 +6,7 @@ from html import escape
 import json
 import os
 from pathlib import Path
+import shutil
 import statistics
 import sys
 import xml.etree.ElementTree as ET
@@ -88,6 +89,8 @@ def html_summary(directory, result, runs, notes):
     }
     collections = list(dict.fromkeys(collection for inventory in indices.values() for collection in inventory))
     prefixes = {name: f"platform-{index}-" for index, name in enumerate(runs, 1)}
+    dates = sorted({platform["metadata"]["started_utc"].split("T", 1)[0]
+                    for platform in platforms.values() if "started_utc" in platform["metadata"]})
     parts = [
         '<!doctype html><html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -95,6 +98,8 @@ def html_summary(directory, result, runs, notes):
         f'<style>{HTML_STYLE}.collection-index{{overflow-x:auto}}td{{vertical-align:top}}'
         'li{margin:12px 0}</style></head><body>',
         '<h1>All-platform collection results</h1>',
+        f'<p>Measurement commit: <code>{escape(result["commit"])}</code>.</p>',
+        *([f'<p>Measurement dates (UTC): {escape(", ".join(dates))}.</p>'] if dates else []),
         '<p>Compare implementations within each platform run, not across machines. '
         'CPU and memory measurements remain separate; no workloads or platforms are averaged together.</p>',
         f'<p>{escape(IMPLEMENTATION_NOTE)}</p>',
@@ -133,8 +138,9 @@ def html_summary(directory, result, runs, notes):
             parts.append("</ul></section>")
     parts += [
         '<section><h2>Platform coverage and variability</h2>',
-        '<p>Hover over a measured size to see every implementation, exact values, and CV '
-        '(sample standard deviation / mean). Zero CV does not establish timer precision.</p>',
+        '<p>Hover over a measured size to see every implementation, measured values, and CV '
+        '(sample standard deviation / mean). Graph measurements use at most four significant digits; '
+        'CSV/JSON exports retain full precision. Zero CV does not establish timer precision.</p>',
         '<table><thead><tr><th>Platform</th><th>Status</th><th>CPU configurations</th>'
         '<th>Memory cases</th><th>Median CV</th><th>CV &gt;10%</th><th>Zero CV</th></tr></thead><tbody>',
     ]
@@ -321,14 +327,45 @@ def combine(directory, commit, collection_status="success"):
     return result
 
 
+def stage_site(directory, destination, result):
+    if result["errors"] or not result["platforms"]:
+        raise ValueError("Only complete collection results can be published")
+    if destination.resolve() == directory.resolve() or directory.resolve() in destination.resolve().parents:
+        raise ValueError("Pages output must be outside the measurement directory")
+    exports = (
+        "summary.html", "summary.md", "summary.csv", "summary.json",
+        "memory-summary.csv", "memory-summary.json", "memory-lifecycle.csv",
+    )
+    files = [directory / name for name in exports if name != "memory-summary.json"]
+    if (directory / "executive-summary.json").exists():
+        files.append(directory / "executive-summary.json")
+    for path in directory.glob("run-*.json"):
+        run = json.loads(path.read_text())
+        platform = directory / run["measurements"]
+        files += [platform / name for name in exports]
+        files += sorted((platform / "graphs").glob("*.svg"))
+    for path in files:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("Missing or non-regular Pages input: " + str(path))
+    destination.mkdir(parents=True)
+    for path in files:
+        target = destination / path.relative_to(directory)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    shutil.copyfile(destination / "summary.html", destination / "index.html")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifacts", type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--collection-status", default="success")
+    parser.add_argument("--site", type=Path, help="Stage a complete report in a new GitHub Pages directory")
     args = parser.parse_args()
     try:
         result = combine(args.artifacts, args.commit, args.collection_status)
+        if args.site is not None:
+            stage_site(args.artifacts, args.site, result)
         if "GITHUB_STEP_SUMMARY" in os.environ:
             with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
                 summary.write((args.artifacts / "summary.md").read_text())

@@ -363,9 +363,9 @@ def collection_graph(collection, rows, implementations, styles, memory=None):
                     f'<polyline points="{coordinates}" fill="none" stroke="{color}" '
                     f'stroke-width="2" stroke-dasharray="{dash}"/>')
                 for row, (px, py) in zip(series, points):
-                    description = f'{name}; {scenario}; {row["size"]} elements; {row[metric]} {label}'
+                    description = f'{name}; {scenario}; {row["size"]} elements; {row[metric]:.4g} {label}'
                     if metric == "median_ns_per_key":
-                        description += f'; CV {row["cv_percent"]:.2f}%'
+                        description += f'; CV {row["cv_percent"]:.4g}%'
                     parts.append(
                         f'<circle cx="{px:.2f}" cy="{py:.2f}" r="3.5" fill="{color}" '
                         f'data-implementation="{escape(name, quote=True)}" data-size="{row["size"]}" '
@@ -379,12 +379,12 @@ def collection_graph(collection, rows, implementations, styles, memory=None):
                 by_name = {row["implementation"]: row for row in values if row["size"] == size}
                 for name in implementations:
                     row = by_name[name]
-                    detail = f"{name}: {row[metric]}"
+                    detail = f"{name}: {row[metric]:.4g}"
                     if metric == "median_ns_per_key":
-                        detail += (f'; {row["speedup_vs_baseline"]:.3f}x vs '
-                                   f'{row["baseline_implementation"]}; CV {row["cv_percent"]:.2f}%')
+                        detail += (f'; {row["speedup_vs_baseline"]:.4g}x vs '
+                                   f'{row["baseline_implementation"]}; CV {row["cv_percent"]:.4g}%')
                     else:
-                        detail += f'; total footprint {row["footprint_bytes"]:,} bytes'
+                        detail += f'; total footprint {row["footprint_bytes"]:.4g} bytes'
                     tooltip.append(detail)
                 parts.append(
                     f'<rect x="{start:.2f}" y="{plot_top}" width="{end - start:.2f}" '
@@ -405,6 +405,7 @@ def summary_notes(rows, context, metadata, memory):
         "Lower is better. CPU graphs show median ns/element. Each panel uses an independent linear "
         "vertical scale; measured element counts are equally spaced horizontal categories. "
         "No workloads or collection sizes are averaged together.",
+        "Graph measurements use at most four significant digits; CSV/JSON exports retain full precision.",
     ]
     if memory is not None:
         notes.append(
