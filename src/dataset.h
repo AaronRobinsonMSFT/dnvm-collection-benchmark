@@ -16,6 +16,7 @@
 namespace dnvm
 {
 constexpr std::uint32_t DatasetSeed = 0x9e3779b9u;
+inline constexpr std::uint32_t BenchmarkSizes[] = {8, 1024, 65536, 131072, 262144};
 
 inline void validate_pointer_pair_hashes(const std::vector<dn_ptrpair_t>& keys)
 {

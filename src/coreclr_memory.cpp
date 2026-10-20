@@ -13,7 +13,7 @@ struct alignas(std::max_align_t) ArrayAllocation
 };
 }
 
-// SHash uses new[] directly rather than an allocator trait. Only the untimed
+// CoreCLR collections use new[] directly rather than an allocator trait. Only the untimed
 // memory/test executables link these replacements; timing uses normal new[].
 void* operator new[](std::size_t bytes)
 {

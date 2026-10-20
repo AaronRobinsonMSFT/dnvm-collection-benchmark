@@ -33,7 +33,7 @@ void print_cases(const char* implementation, bool& first)
 {
     for (const char* scenario : dnvm::MemoryScenarios)
         if (dnvm::supports_scenario<Map>(scenario))
-            for (std::uint32_t size : dnvm::MemorySizes)
+            for (std::uint32_t size : dnvm::BenchmarkSizes)
                 print_case(std::string(implementation) + "/" + scenario + "/" + std::to_string(size),
                            dnvm::measure_memory<Map>(scenario, size), first);
 }
@@ -58,7 +58,7 @@ template <typename Map>
 void print_lifecycles(const char* collection, const char* implementation, bool& first)
 {
     for (const auto& mode : dnvm::LifecycleModes)
-        for (std::uint32_t size : dnvm::MemorySizes)
+        for (std::uint32_t size : dnvm::BenchmarkSizes)
             print_lifecycle(collection, implementation, mode.name, size,
                             dnvm::measure_lifecycle<Map>(mode.reserved, size), first);
 }
@@ -129,9 +129,9 @@ int main(int argc, char**)
         first = true;
         dnvm::for_each_family([&first](const char* name, auto family, const char*) {
             using Maps = dnvm::CountedMaps<decltype(family)>;
-            print_cases<typename Maps::RuntimeMap>((std::string(name) + "/runtime").c_str(), first);
-            print_cases<typename Maps::StdMap>((std::string(name) + "/std").c_str(), first);
-            print_cases<typename Maps::AbseilMap>((std::string(name) + "/abseil").c_str(), first);
+            dnvm::for_each_map_implementation<Maps>([name, &first](const char* implementation, auto tag) {
+                print_cases<typename decltype(tag)::type>((std::string(name) + "/" + implementation).c_str(), first);
+            });
         });
         dnvm::for_each_sequence_family([&first](const char* collection, auto family, const char*) {
             using Family = decltype(family);
@@ -151,9 +151,9 @@ int main(int argc, char**)
         first = true;
         dnvm::for_each_family([&first](const char* name, auto family, const char*) {
             using Maps = dnvm::CountedMaps<decltype(family)>;
-            print_lifecycles<typename Maps::RuntimeMap>(name, "runtime", first);
-            print_lifecycles<typename Maps::StdMap>(name, "std", first);
-            print_lifecycles<typename Maps::AbseilMap>(name, "abseil", first);
+            dnvm::for_each_map_implementation<Maps>([name, &first](const char* implementation, auto tag) {
+                print_lifecycles<typename decltype(tag)::type>(name, implementation, first);
+            });
         });
         dnvm::for_each_sequence_family([&first](const char* collection, auto family, const char*) {
             using Family = decltype(family);

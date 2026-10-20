@@ -72,10 +72,39 @@ foreach(source sbuffer arraylist)
     string(REPLACE "#include \"stdafx.h\"" "#include \"coreclr_compat.h\"" standalone "${standalone}")
     file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/coreclr/${source}.cpp" CONTENT "${standalone}" @ONLY)
 endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CORECLR}/inc/utilcode.h" "${CORECLR}/utilcode/collections.cpp")
+# Extract the deprecated collection, not the unrelated VM utilities in these files.
+file(READ "${CORECLR}/inc/utilcode.h" chained_header)
+string(FIND "${chained_header}" "typedef DPTR(struct HASHENTRY)" chained_start)
+string(FIND "${chained_header}" "inline COUNT_T HashCOUNT_T" chained_end)
+if(chained_start LESS 0 OR chained_end LESS chained_start)
+    message(FATAL_ERROR "Cannot locate pinned CHashTable declarations")
+endif()
+math(EXPR chained_length "${chained_end} - ${chained_start}")
+string(SUBSTRING "${chained_header}" ${chained_start} ${chained_length} chained_header)
+set(chained_header "// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+#pragma once
+#include \"coreclr_chained_hash_compat.h\"
+${chained_header}")
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/coreclr/chained_hash.h" CONTENT "${chained_header}" @ONLY)
+file(READ "${CORECLR}/utilcode/collections.cpp" chained_source)
+string(FIND "${chained_source}" "void CClosedHashBase::Delete" chained_end)
+if(chained_end LESS 0)
+    message(FATAL_ERROR "Cannot locate pinned CHashTable implementation")
+endif()
+string(SUBSTRING "${chained_source}" 0 ${chained_end} chained_source)
+string(REPLACE "#include \"stdafx.h\"" "#include \"chained_hash.h\"" chained_source "${chained_source}")
+string(REPLACE "#include \"utilcode.h\"" "" chained_source "${chained_source}")
+string(REPLACE "#include \"ex.h\"" "" chained_source "${chained_source}")
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/coreclr/chained_hash.cpp" CONTENT "${chained_source}" @ONLY)
 add_library(runtime_sequences STATIC
     "${CMAKE_CURRENT_BINARY_DIR}/coreclr/sbuffer.cpp"
-    "${CMAKE_CURRENT_BINARY_DIR}/coreclr/arraylist.cpp")
-target_include_directories(runtime_sequences PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CORECLR}/inc")
+    "${CMAKE_CURRENT_BINARY_DIR}/coreclr/arraylist.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/coreclr/chained_hash.cpp")
+target_include_directories(runtime_sequences PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CORECLR}/inc" "${CMAKE_CURRENT_BINARY_DIR}/coreclr")
 target_include_directories(runtime_sequences PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/runtime/src/native")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     target_compile_definitions(runtime_sequences PUBLIC HOST_64BIT)

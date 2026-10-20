@@ -78,6 +78,31 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([row["implementation"] for row in rows], ["runtime", "std"])
         self.assertEqual([row["speedup_vs_baseline"] for row in rows], [1, 0.5])
 
+    def test_four_way_comparison_keeps_all_cpu_and_memory_series(self):
+        self.metadata["expected_benchmarks"].append("fourth/lookup_hit/8")
+        self.document["benchmarks"] += [
+            {**row, "name": "fourth/lookup_hit/8", "cpu_time": 120}
+            for row in self.document["benchmarks"][:3]
+        ]
+        rows = REPORT.summarize(self.document, self.metadata)
+        memory = REPORT.validate_memory(
+            self.memory_document(), self.document["context"], self.metadata["expected_benchmarks"])
+        implementations = (*IMPLEMENTATIONS, "fourth")
+        graph = ET.fromstring(REPORT.collection_graph(
+            "", rows, implementations,
+            {name: ("#0072b2", "none") for name in implementations}, memory["cases"]))
+        points = graph.findall(".//{http://www.w3.org/2000/svg}circle")
+        for metric in ("median_ns_per_key", "footprint_bytes_per_key"):
+            self.assertEqual({point.attrib["data-implementation"] for point in points
+                              if point.attrib["data-metric"] == metric}, set(implementations))
+        tooltips = ["".join(element.itertext()) for element in graph.findall(
+            ".//{http://www.w3.org/2000/svg}rect[@data-tooltip]")]
+        self.assertEqual(len(tooltips), 2)
+        for tooltip in tooltips:
+            for name in implementations:
+                self.assertIn(name + ": ", tooltip)
+        self.assertEqual(len(memory["lifecycles"]), 8)
+
     def test_rejects_unrepresentative_or_mismatched_build(self):
         for key, value in (("build_type", "Debug"), ("sanitizers", "1"),
                            ("runtime_revision", "wrong")):

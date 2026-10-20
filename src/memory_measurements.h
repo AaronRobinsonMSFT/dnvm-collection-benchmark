@@ -12,7 +12,6 @@ inline constexpr const char* MemoryScenarios[] = {
     "lookup_hit", "lookup_miss", "build_growing", "build_reserved", "duplicate",
     "replace", "erase_insert", "iterate", "clear_refill", "duplicate_build"
 };
-inline constexpr std::uint32_t MemorySizes[] = {8, 64, 1024, 65536};
 struct LifecycleMode
 {
     const char* name;

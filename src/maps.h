@@ -11,6 +11,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "key_types.h"
 #include "coreclr_maps.h"
+#include "coreclr_chained_hash.h"
 #include "runtime_umap.h"
 
 namespace dnvm
@@ -171,6 +172,26 @@ using PointerPairMaps = MapFamily<RuntimePointerPairMap>;
 using StringMaps = MapFamily<RuntimeStringMap>;
 using UMapMaps = MapFamily<RuntimeUMap>;
 
+struct DebuggerHashMaps : CoreClrFamily<CoreChainedHash>
+{
+    using SHashMap = CoreSHash;
+};
+
+template <typename T> struct MapType { using type = T; };
+template <typename Family, typename = void> struct HasSHashMap : std::false_type {};
+template <typename Family>
+struct HasSHashMap<Family, std::void_t<typename Family::SHashMap>> : std::true_type {};
+
+template <typename Family, typename Visitor>
+void for_each_map_implementation(Visitor visitor)
+{
+    visitor("runtime", MapType<typename Family::RuntimeMap>{});
+    if constexpr (HasSHashMap<Family>::value)
+        visitor("shash", MapType<typename Family::SHashMap>{});
+    visitor("std", MapType<typename Family::StdMap>{});
+    visitor("abseil", MapType<typename Family::AbseilMap>{});
+}
+
 template <typename Visitor>
 void for_each_family(Visitor visitor)
 {
@@ -193,6 +214,15 @@ void for_each_family(Visitor visitor)
     visitor("umap", UMapMaps{},
         "dn_umap; separate-chaining hash table; borrowed pointer keys/values; default direct hash. "
         "Reserve requests buckets. Replacement checks presence before dn_umap_insert_or_assign.");
+    visitor("debugger_hash", DebuggerHashMaps{},
+        "CoreCLR CHashTableAndData<CNewDataNoThrow> with 101 fixed buckets, uint32_t keys, and borrowed "
+        "pointer values; entry storage grows without rehashing. shash is CoreCLR SHash<MapSHashTraits<uint32_t, void*>>; "
+        "STL unordered_multimap; Abseil btree_multimap (not a hash table). All retain duplicate keys; "
+        "shared datasets exclude SHash's reserved keys 0 and UINT32_MAX. "
+        "replacement changes one match and removal erases all matches. Reserved builds preallocate entry "
+        "storage but keep 101 buckets. Default initialization allocates 101 entries; clear retains storage. "
+        "This isolates the underlying collection, not debugger object reference counting, locks, "
+        "the EE interop-safe allocator, MethodDef/module hashing, or DAC behavior.");
 }
 
 template <typename Visitor>

@@ -290,6 +290,12 @@ struct CountedMaps<CoreClrFamily<Runtime>>
                   "Tracking changed Abseil object size");
 };
 
+template <>
+struct CountedMaps<DebuggerHashMaps> : CountedMaps<CoreClrFamily<CoreChainedHash>>
+{
+    using SHashMap = CoreSHash;
+};
+
 static_assert(sizeof(CountedRuntimeMap) == sizeof(RuntimeMap), "Tracking changed runtime object size");
 static_assert(sizeof(CountedStdMap) == sizeof(StdMap), "Tracking changed std object size");
 static_assert(sizeof(CountedAbseilMap) == sizeof(AbseilMap), "Tracking changed Abseil object size");

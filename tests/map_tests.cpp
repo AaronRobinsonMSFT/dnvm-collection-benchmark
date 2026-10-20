@@ -573,7 +573,7 @@ void native_memory_sizes()
     REQUIRE(account.live_allocations() == 0);
 }
 
-template <typename Map>
+template <typename Map, bool CanReserve = true>
 void coreclr_contract(std::uint32_t count)
 {
     dnvm::MapDataset<Map> data(count);
@@ -586,7 +586,8 @@ void coreclr_contract(std::uint32_t count)
     dnvm::populate(map, data);
     dnvm::populate(map, data);
     REQUIRE(map.size() == count * 2);
-    map.reserve(count * 4);
+    if constexpr (CanReserve)
+        map.reserve(count * 4);
     std::vector<unsigned> visits(count);
     std::unordered_map<std::uint32_t, std::size_t> indices;
     for (std::size_t i = 0; i < count; ++i)
@@ -748,6 +749,84 @@ void coreclr_native_memory()
     }
 }
 
+void chained_hash_contract()
+{
+    for (std::uint32_t count : {1, 8, 101, 1024, 4096})
+        coreclr_contract<dnvm::CoreChainedHash, false>(count);
+
+    dnvm::CoreChainedHash map;
+    REQUIRE(map.bucket_count() == 101);
+    const auto initial_capacity = map.entry_capacity();
+    for (std::uint32_t key = 1; key <= 1024; ++key)
+        REQUIRE(map.insert(key, nullptr));
+    REQUIRE(map.entry_capacity() > initial_capacity);
+    REQUIRE(map.bucket_count() == 101);
+    const auto grown_capacity = map.entry_capacity();
+    map.clear();
+    REQUIRE(map.entry_capacity() == grown_capacity);
+    REQUIRE(map.bucket_count() == 101);
+    REQUIRE(map.size() == 0);
+
+    int first = 1;
+    int second = 2;
+    for (std::uint32_t key : {1, 102, 203})
+        REQUIRE(map.insert(key, &first));
+    REQUIRE(map.insert(102, &second));
+    REQUIRE(map.erase(102));
+    void* value = nullptr;
+    REQUIRE(!map.find(102, value));
+    REQUIRE(map.find(1, value) && value == &first);
+    REQUIRE(map.find(203, value) && value == &first);
+    REQUIRE(map.erase(203));
+    REQUIRE(map.erase(1));
+    REQUIRE(map.size() == 0);
+    for (std::uint32_t key : {0u, std::numeric_limits<std::uint32_t>::max()})
+    {
+        REQUIRE(map.insert(key, nullptr));
+        REQUIRE(map.find(key, value) && value == nullptr);
+        REQUIRE(map.erase(key));
+    }
+    dnvm::CoreChainedHash reserved(1024);
+    REQUIRE(reserved.bucket_count() == 101);
+    REQUIRE(reserved.entry_capacity() == 1024);
+    for (std::uint32_t key = 1; key <= 1024; ++key)
+        REQUIRE(reserved.insert(key, nullptr));
+    REQUIRE(reserved.entry_capacity() == 1024);
+    REQUIRE(reserved.bucket_count() == 101);
+    bool rejected = false;
+    try
+    {
+        dnvm::CoreChainedHash oversized(std::numeric_limits<std::uint32_t>::max());
+    }
+    catch (const std::bad_alloc&)
+    {
+        rejected = true;
+    }
+    REQUIRE(rejected);
+}
+
+void chained_hash_memory()
+{
+    dnvm::MemoryAccount account;
+    {
+        dnvm::MemoryScope scope(account);
+        coreclr_contract<dnvm::CoreChainedHash, false>(1024);
+    }
+    REQUIRE(account.live_allocations() == 0);
+    REQUIRE(account.stats().allocations == account.stats().deallocations);
+    REQUIRE(account.stats().allocated_bytes == account.stats().freed_bytes);
+    const auto build = dnvm::measure_memory<dnvm::CoreChainedHash>("build_reserved", 1024);
+    REQUIRE(build.traffic.allocations == 2);
+    REQUIRE(build.traffic.deallocations == 2);
+    REQUIRE(build.after_destroy_heap_bytes == 0);
+    const auto lifecycle = dnvm::measure_lifecycle<dnvm::CoreChainedHash>(false, 1024);
+    REQUIRE(lifecycle.empty_heap_bytes > 0);
+    REQUIRE(lifecycle.populated_heap_bytes > lifecycle.empty_heap_bytes);
+    REQUIRE(lifecycle.populated_heap_bytes == lifecycle.cleared_heap_bytes);
+    REQUIRE(lifecycle.destroyed_heap_bytes == 0);
+    coreclr_memory<dnvm::CoreChainedHash>();
+}
+
 template <typename Key>
 void dataset_reuse()
 {
@@ -782,7 +861,7 @@ void dataset_memory_reuse()
 
 void pointer_datasets()
 {
-    for (std::uint32_t count : {8, 64, 1024, 65536})
+    for (std::uint32_t count : dnvm::BenchmarkSizes)
     {
         dnvm::DatasetFor<void*> pointers(count);
         for (std::uint32_t i = 0; i < count; ++i)
@@ -1048,6 +1127,8 @@ int main(int argc, char** argv)
         coreclr_sentinels<dnvm::CoreMapSHash>();
         coreclr_sentinels<dnvm::CoreSetSHash>();
         coreclr_native_memory();
+        chained_hash_contract();
+        chained_hash_memory();
         coreclr_memory<dnvm::CoreSHash>();
         coreclr_memory<dnvm::CoreMapSHash>();
         coreclr_memory<dnvm::CoreSetSHash>();

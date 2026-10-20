@@ -10,6 +10,7 @@
 
 #include "absl/container/inlined_vector.h"
 #include "coreclr_compat.h"
+#include "dataset.h"
 #include "dn-vector-ptr.h"
 #include "memory_accounting.h"
 
@@ -334,7 +335,7 @@ void for_each_sequence_size(Visitor visitor)
     if constexpr (std::is_same_v<Family, ArrayListFamily>)
         for (std::uint32_t size : {5, 6})
             visitor(size);
-    for (std::uint32_t size : {8, 64, 1024, 65536})
+    for (std::uint32_t size : BenchmarkSizes)
         visitor(size);
 }
 

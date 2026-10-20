@@ -160,7 +160,7 @@ void clear_refill(benchmark::State& state)
 template <typename Map>
 void register_map(const std::string& name)
 {
-    for (std::int64_t size : {8, 64, 1024, 65536})
+    for (std::uint32_t size : dnvm::BenchmarkSizes)
     {
         auto add = [&name, size](const std::string& scenario, auto function) {
             benchmark::RegisterBenchmark((name + "/" + scenario).c_str(),
@@ -224,9 +224,9 @@ int main(int argc, char** argv)
 #endif
     dnvm::for_each_family([](const char* name, auto family, const char*) {
         using Family = decltype(family);
-        register_map<typename Family::RuntimeMap>(std::string(name) + "/runtime");
-        register_map<typename Family::StdMap>(std::string(name) + "/std");
-        register_map<typename Family::AbseilMap>(std::string(name) + "/abseil");
+        dnvm::for_each_map_implementation<Family>([name](const char* implementation, auto tag) {
+            register_map<typename decltype(tag)::type>(std::string(name) + "/" + implementation);
+        });
     });
     register_sequences();
     benchmark::RunSpecifiedBenchmarks();

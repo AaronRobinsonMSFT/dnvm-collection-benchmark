@@ -28,6 +28,7 @@ License notices remain in all submodules.
 | `mapshash` | `MapSHash<uint32_t, void*>` | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
 | `setshash` | `SetSHash<uint32_t>` | `std::unordered_multiset<uint32_t>` | `absl::btree_multiset<uint32_t>` |
 | `umap` | `dn_umap` | `std::unordered_map<void*, void*>` | `absl::flat_hash_map<void*, void*>` |
+| `debugger_hash` | `CHashTableAndData<CNewDataNoThrow>`; additional `shash` series uses CoreCLR SHash | `std::unordered_multimap<uint32_t, void*>` | `absl::btree_multimap<uint32_t, void*>` |
 | `vector` | `dn_vector_ptr` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
 | `sarray` | `SArray<void*>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
 | `inline_sarray` | `InlineSArray<void*, 8>` | `std::vector<void*>` | `absl::InlinedVector<void*, 8>` |
@@ -39,16 +40,20 @@ License notices remain in all submodules.
 |---|---|
 | Ownership | Borrowed keys and values; key storage excluded from collection memory |
 | Datasets | Generated once per key type and size in each measurement process; shared across implementations/scenarios |
+| Element counts | 8, 1,024, 65,536, 131,072, and 262,144 for CPU, memory, and lifecycle measurements; ArrayList also includes 5/6 |
 | Pointer pairs | Ordered; STL/Abseil share the Abseil hash combiner |
 | Pointer datasets | Pointer-sized slots and seeded pair indices; pair hash-diversity checks run before population |
 | Strings | NUL-terminated; content equality; STL/Abseil hash string views |
 | String dataset | 0/32/64-byte prefixes + decimal IDs; separate equal-content hit buffers |
 | CoreCLR integration | Pinned headers and implementation bodies; standalone types/contracts replace VM infrastructure/PCH includes |
 | CoreCLR duplicates | Retained; duplicate-build measures population, duplicate insertion, destruction |
-| CoreCLR sentinels | Key `0` reserved; `UINT32_MAX` also reserved for remove-enabled `shash` |
+| CoreCLR sentinels | SHash reserves key `0`; remove-enabled SHash also reserves `UINT32_MAX`; debugger hash comparisons use the same sentinel-free dataset |
 | CoreCLR removal | `shash` erases all matches; default `mapshash`/`setshash` have no removal |
 | CoreCLR alternatives | STL hash containers vs. Abseil B-trees; B-trees have no reserve |
 | CoreCLR memory | Array allocations tracked only in untimed memory/test binaries |
+| Debugger hash | 101 fixed buckets; uint32_t keys and borrowed pointer values; duplicates retained; replacement changes one match and removal erases all matches |
+| Debugger hash capacity | Default initialization allocates 101 entries; reserved builds preallocate entries without changing buckets; entry storage grows and is retained by clear |
+| Debugger hash scope | Original CHashTable/CHashTableAndData bodies; excludes debugger object reference counting, locks, EE interop-safe allocator, MethodDef/module hashing, and DAC behavior |
 | dn_umap | Separate chaining; reserve requests nonzero buckets; rehash allocation failure is not recoverable |
 | Sequences | Borrowed pointer elements; each implementation's traversal API, indexed reads/writes, builds and clear/refill where supported |
 | dn_vector_ptr | Embedded dn_vector_ptr_t object; default initialization allocates 64 slots; reserved initialization requests the measured size; clear retains capacity |
